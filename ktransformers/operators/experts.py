@@ -934,13 +934,42 @@ class KDeepseekV2MoE(BaseInjectedModule, DeepseekV2MoE):
         return final_out
 
 class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
+    layer_counter = 0
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.layer_id = KDeepseekV3MoE.layer_counter
+        KDeepseekV3MoE.layer_counter += 1
     
-    def forward(self, hidden_states):
+    def record_topk_idx(self, prompt_name, mode, token_idx, layer_idx, topk_idx, hidden_states):
+        import json
+        if mode == "decode":
+            directory = os.path.join("./", "topk_idx")
+            if not os.path.exists(directory):
+                os.makedirs(directory)
+            file = os.path.join(directory, prompt_name + ".json")
+        
+            record = {
+                "mode": mode,
+                "token_idx": token_idx,
+                "layer_idx": layer_idx,
+                "topk_idx": topk_idx.tolist(),
+                # "hidden_states": hidden_states.tolist(),
+            }
+            with open(file, "a") as f:
+                json.dump(record, f)
+                f.write("\n")
+
+    def forward(self, hidden_states, prompt_name, mode, token_idx):
         identity = hidden_states
         orig_shape = hidden_states.shape
         sequence_length = orig_shape[1]
         topk_idx, topk_weight = self.gate(hidden_states)
         hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+
+        # if prompt_name is None:
+        #     sys.exit("prompt_name is None, please set it to a valid value")
+        self.record_topk_idx(prompt_name, mode, token_idx, self.layer_id, topk_idx, hidden_states)
+        
         
         # only for generate phase
         if sequence_length == 1 and hasattr(self.experts.generate_experts, "submit_for_one_decode") and torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():

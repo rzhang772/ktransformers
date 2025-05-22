@@ -387,7 +387,10 @@ class DeepseekV3MLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
-    def forward(self, x):
+    def forward(self, x, 
+                prompt_name: Optional[str] = None,
+                mode: Optional[str] = None, 
+                token_idx: Optional[torch.Tensor] = None):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj
 
@@ -1177,6 +1180,9 @@ class DeepseekV3DecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
+        prompt_name: Optional[str] = None,
+        mode: Optional[str] = None,
+        token_idx: Optional[torch.LongTensor] = None,
         **kwargs,
     ) -> Tuple[
         torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
@@ -1219,7 +1225,7 @@ class DeepseekV3DecoderLayer(nn.Module):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        hidden_states = self.mlp(hidden_states, prompt_name, mode, token_idx)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -1397,6 +1403,9 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        prompt_name: Optional[str] = None,
+        mode: Optional[str] = None,
+        token_idx: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = (
             output_attentions
@@ -1482,6 +1491,9 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
                 output_attentions=output_attentions,
                 use_cache=use_cache,
                 cache_position=cache_position,
+                prompt_name = prompt_name,
+                mode = mode,
+                token_idx = token_idx,
             )
 
             hidden_states = layer_outputs[0]
@@ -1646,6 +1658,9 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel, GenerationMixin):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        prompt_name: Optional[str] = None,
+        mode: Optional[str] = None,
+        token_idx: Optional[torch.LongTensor] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -1698,6 +1713,9 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel, GenerationMixin):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             cache_position=cache_position,
+            prompt_name=prompt_name,
+            mode=mode,
+            token_idx=token_idx,
         )
 
         hidden_states = outputs[0]

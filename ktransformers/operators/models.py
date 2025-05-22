@@ -568,6 +568,9 @@ class KDeepseekV2Model(BaseInjectedModule):
         per_layer_prefill_intput_threshold: (
             int | None
         ) = None,  # if None, no per-layer prefill
+        prompt_name: Optional[str] = None,
+        mode: Optional[str] = None,
+        token_idx: Optional[int] = None,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         if per_layer_prefill_intput_threshold is None:
             per_layer_prefill_intput_threshold = self.per_layer_prefill_intput_threshold
@@ -745,6 +748,9 @@ class KDeepseekV2Model(BaseInjectedModule):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
+                    prompt_name = prompt_name,
+                    mode = mode,
+                    token_idx = token_idx,
                 )
                 t5 = time.time()
                 if per_layer_prefill_flag:

@@ -206,7 +206,7 @@ def tf_logits_warper(generation_config):
 
 def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cuda_graph: bool = True,
                          mode = 'normal', force_think: bool = False, chunk_size = 16384, use_flashinfer_mla = False,
-                         num_heads = None, head_dim_ckv = None, head_dim_kpe = None, q_head_dim = None):
+                         num_heads = None, head_dim_ckv = None, head_dim_kpe = None, q_head_dim = None, prompt_name = None):
     import os
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     torch._dynamo.config.suppress_errors = True
@@ -219,9 +219,10 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
 
     tokens = []
     
-    def decode_one_tokens(cuda_graph_runner, cur_token, position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph: bool = True):
+    def decode_one_tokens(cuda_graph_runner, cur_token, position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph: bool = True, prompt_name = None, token_idx = None):
         if cuda_graph_runner is None:
             use_cuda_graph = False
+        use_cuda_graph = False
         if use_cuda_graph:
             logits = cuda_graph_runner(cur_token, position_ids, cache_position)
         else:
@@ -238,7 +239,10 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                         position_ids=position_ids,
                         cache_position=cache_position,
                         past_key_values=past_key_values,
-                        return_dict=False, use_cache=True)[0]
+                        return_dict=False, use_cache=True,
+                        prompt_name = prompt_name,
+                        mode = "decode",
+                        token_idx = token_idx)[0]
         if past_key_values != None and isinstance(past_key_values, StaticCache):
             past_key_values.change_seq_length(1)
         sync_all_device(all_cuda_device)
@@ -346,7 +350,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                 warm_uped = True
                 cuda_graph_runner = CUDAGraphRunner()
                 cuda_graph_runner.capture(model, next_token.unsqueeze(0), position_ids, cache_position, past_key_values, torch_device, return_dict=False, use_cache=True)
-            next_token = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph).to(torch_device)
+            next_token = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph, prompt_name = prompt_name, token_idx=i).to(torch_device)
             inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
             generated_ids[:, cache_position] = next_token.int()
             tokens.append(int(next_token))
