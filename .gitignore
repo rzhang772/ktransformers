@@ -34,3 +34,4 @@ moe_analysis/figures/
 moe_analysis/runs/
 ktransformers/operators/test_topk/
 ktransformers/operators/topk_idx/
+profile/

@@ -12,7 +12,9 @@ import sys
 project_dir = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, project_dir)
 import torch
+import torch.profiler
 import logging
+from torch.profiler import profile, ProfilerActivity, tensorboard_trace_handler
 from transformers import (
     AutoTokenizer,
     AutoConfig,
@@ -171,6 +173,7 @@ def local_chat(
             output_dir = os.path.join(output_base, dataset)
             os.makedirs(output_dir, exist_ok=True)
             prompt_name = output_base + "/" + dataset + "/" + file_name
+            prompt_name = None
 
             print(f"output: - {prompt_name}")
 
@@ -183,13 +186,16 @@ def local_chat(
             if system != "Windows" and (config.architectures[0] == "DeepseekV2ForCausalLM" or config.architectures[0] == "DeepseekV3ForCausalLM") and flashinfer_enabled and get_compute_capability() >= 8 and device_manager.gpu_vendor == GPUVendor.NVIDIA:
                 generated = prefill_and_generate(
                     model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size,
-                    use_flashinfer_mla = True, num_heads = config.num_attention_heads, head_dim_ckv = config.kv_lora_rank, head_dim_kpe = config.qk_rope_head_dim, q_head_dim = config.qk_rope_head_dim + config.qk_nope_head_dim, prompt_name="test_topk"
+                    use_flashinfer_mla = True, num_heads = config.num_attention_heads, head_dim_ckv = config.kv_lora_rank, head_dim_kpe = config.qk_rope_head_dim, q_head_dim = config.qk_rope_head_dim + config.qk_nope_head_dim, prompt_name=None
                 )
             else:
                 generated = prefill_and_generate(
                     model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size, prompt_name=prompt_name
                 )
-            # break
+
+
+            break
+        break
 
 
     # while True:

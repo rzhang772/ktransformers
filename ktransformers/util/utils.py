@@ -21,7 +21,7 @@ from transformers import (
     EpsilonLogitsWarper,
     EtaLogitsWarper,
 )
-
+from torch.profiler import profile, ProfilerActivity, tensorboard_trace_handler
 from ktransformers.util.custom_loader import ModelLoaderFactory, ModelLoader, SafeTensorLoader, GGUFLoader, translate_name_to_gguf
 from ktransformers.operators import base_operator
 from ktransformers.models.custom_cache import StaticCache
@@ -222,7 +222,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     def decode_one_tokens(cuda_graph_runner, cur_token, position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph: bool = True, prompt_name = None, token_idx = None):
         if cuda_graph_runner is None:
             use_cuda_graph = False
-        use_cuda_graph = False
+        # use_cuda_graph = False
         if use_cuda_graph:
             logits = cuda_graph_runner(cur_token, position_ids, cache_position)
         else:
@@ -310,6 +310,16 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             chunk_end = min(chunk_start + chunk_size, seq_length)
             if past_key_values != None:
                 past_key_values.cur_idx=cache_position[chunk_start:chunk_end]
+            
+            # with profile(
+            #     activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            #     record_shapes=True,
+            #     with_stack=True,
+            #     profile_memory=True,
+            # ) as prof:
+            #     logits = chunk_prefill(inputs[:, chunk_start:chunk_end], cache_position[chunk_start:chunk_end], past_key_values)
+            # prof.export_chrome_trace(f"./prefill.json")
+
             logits = chunk_prefill(inputs[:, chunk_start:chunk_end], cache_position[chunk_start:chunk_end], past_key_values)
             chunk_start += chunk_size
 
@@ -350,6 +360,18 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                 warm_uped = True
                 cuda_graph_runner = CUDAGraphRunner()
                 cuda_graph_runner.capture(model, next_token.unsqueeze(0), position_ids, cache_position, past_key_values, torch_device, return_dict=False, use_cache=True)
+            
+            # with profile(
+            #     activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            #     record_shapes=True,
+            #     with_stack=True,
+            #     profile_memory=True,
+            #     schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
+            # ) as prof:
+            #     next_token = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph, prompt_name = prompt_name, token_idx=i).to(torch_device)
+            #     prof.step()
+            # prof.export_chrome_trace(f"./generate_{i}.json")
+
             next_token = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph, prompt_name = prompt_name, token_idx=i).to(torch_device)
             inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
             generated_ids[:, cache_position] = next_token.int()

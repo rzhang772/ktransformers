@@ -968,7 +968,7 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
 
         # if prompt_name is None:
         #     sys.exit("prompt_name is None, please set it to a valid value")
-        self.record_topk_idx(prompt_name, mode, token_idx, self.layer_id, topk_idx, hidden_states)
+        # self.record_topk_idx(prompt_name, mode, token_idx, self.layer_id, topk_idx, hidden_states)
         
         
         # only for generate phase
