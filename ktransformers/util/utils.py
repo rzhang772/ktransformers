@@ -360,6 +360,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                 print(stream.end(), end="", flush=True)
                 break
             else:
+                # pass
                 print(stream.put(next_token.item()), end="", flush=True)
             cache_position += 1
             position_ids = cache_position.unsqueeze(0)

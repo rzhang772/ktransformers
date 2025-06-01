@@ -943,17 +943,17 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
     def record_topk_idx(self, prompt_name, mode, token_idx, layer_idx, topk_idx, hidden_states):
         import json
         if mode == "decode":
-            directory = os.path.join("./", "topk_idx")
-            if not os.path.exists(directory):
-                os.makedirs(directory)
-            file = os.path.join(directory, prompt_name + ".json")
+            # directory = os.path.join("./", "topk_idx")
+            # if not os.path.exists(directory):
+            #     os.makedirs(directory)
+            file = prompt_name + ".json"
         
             record = {
                 "mode": mode,
                 "token_idx": token_idx,
                 "layer_idx": layer_idx,
                 "topk_idx": topk_idx.tolist(),
-                # "hidden_states": hidden_states.tolist(),
+                "hidden_states": hidden_states.tolist(),
             }
             with open(file, "a") as f:
                 json.dump(record, f)
