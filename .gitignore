@@ -29,6 +29,7 @@ test_prompt.txt
 csrc/demo
 .ssh/
 moe_analysis/prompt_datasets/
+moe_analysis/test_prompt/
 moe_analysis/outputs/
 moe_analysis/figures/
 moe_analysis/runs/

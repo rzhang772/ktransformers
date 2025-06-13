@@ -1442,6 +1442,8 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
             past_key_values_length = past_key_values.get_usable_length(seq_length)
 
+        # position_ids: prefill->None-> [0, 1, 2, ..., seq_length - 1] or ...chunk
+        # decode->[seq_len]
         if position_ids is None:
             device = input_ids.device if input_ids is not None else inputs_embeds.device
             position_ids = torch.arange(
@@ -1475,6 +1477,8 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
         hidden_states = inputs_embeds
 
         # decoder layers
+        # If output_hidden_states is True, we will store all hidden states
+        # If output_attentions is True, we will store all attentions
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None

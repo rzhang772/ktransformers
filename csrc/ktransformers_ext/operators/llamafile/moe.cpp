@@ -47,7 +47,8 @@ MOE::MOE(MOEConfig config) {
     }
     #endif
 
-    std::vector<std::pair<void**, uint64_t>> s_mem_requests;
+    // single
+    std::vector<std::pair<void**, uint64_t>> s_mem_requests; 
     s_mem_requests.push_back({(void**)&s_input_fp32_, sizeof(float) * config_.hidden_size});
     s_mem_requests.push_back({(void**)&s_gate_input_, config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type)});
     s_mem_requests.push_back({(void**)&s_up_input_, config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type)});
@@ -66,6 +67,7 @@ MOE::MOE(MOEConfig config) {
     s_mem_requests.push_back({(void**)&s_output_fp32_, sizeof(float) * config_.hidden_size});
     shared_mem_buffer.alloc(this, s_mem_requests);
 
+    // batch
     std::vector<std::pair<void**, uint64_t>> m_mem_requests;
     m_input_fp32_.resize(config_.group_max_len);
     m_gate_input_.resize(config_.group_max_len);
@@ -130,6 +132,7 @@ void MOE::warm_up(Backend* backend) {
     }
 }
 
+// sigmoid activation function
 static float act_fn(float x) {
     return x / (1.0f + expf(-x));
 }
@@ -137,9 +140,11 @@ static float act_fn(float x) {
 void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend) {
     const void* gate_input_ptr;
     const void* up_input_ptr;
+    // hidden_type: bf16 / fp16, 
     if (config_.hidden_type == ggml_internal_get_type_traits(config_.gate_type).vec_dot_type && config_.hidden_type == ggml_internal_get_type_traits(config_.up_type).vec_dot_type) {
         gate_input_ptr = up_input_ptr = input;
     } else {
+        // 将输入的激活值转换为fp32保存到 s_input_fp32_
         to_float(input, s_input_fp32_, config_.hidden_size, config_.hidden_type);
         if (ggml_internal_get_type_traits(config_.gate_type).vec_dot_type == ggml_internal_get_type_traits(config_.up_type).vec_dot_type) {
             from_float(s_input_fp32_, s_gate_input_, config_.hidden_size, ggml_internal_get_type_traits(config_.gate_type).vec_dot_type);
@@ -159,6 +164,7 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, c
             }
         }
     }
+    // 2048 / 64
     int nth = config_.intermediate_size / config_.stride;
     backend->do_work_stealing_job(nth * k, nullptr, [&](int task_id) {
         int expert_idx = task_id / nth;
@@ -191,6 +197,7 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, c
             from_float(intermediate_fp32_ptr, down_input_ptr, config_.stride, ggml_internal_get_type_traits(config_.down_type).vec_dot_type);
         }
     }, nullptr);
+    
     if (config_.stride % ggml_blck_size(ggml_internal_get_type_traits(config_.down_type).vec_dot_type) != 0) {
         for (int i = 0; i < k; i++) {
             from_float(s_intermediate_fp32_[i], s_down_input_[i], config_.intermediate_size, ggml_internal_get_type_traits(config_.down_type).vec_dot_type);
@@ -342,10 +349,15 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
 }
 
 void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, int* batch_size_tensor, Backend* backend) {
+    // backend 中记录了线程数并实现了任务处理函数
     qlen = batch_size_tensor[0];
     if (qlen < config_.group_min_len) {
         for (int i = 0; i < qlen; i++) {
-            forward_one(k, expert_ids + i * k, weights + i * k, (uint8_t*)input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend);
+            forward_one(k, 
+                expert_ids + i * k, 
+                weights + i * k, 
+                (uint8_t*)input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), 
+                (uint8_t*)output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend);
         }
         return;
     }
@@ -353,5 +365,10 @@ void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weig
     forward_many(forward_len, k, expert_ids, weights, input, output, backend);
 
     batch_size_tensor[0] -= forward_len;
-    forward(qlen - forward_len, k, expert_ids + forward_len * k, weights + forward_len * k, (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), batch_size_tensor, backend);
+    forward(qlen - forward_len, 
+        k, 
+        expert_ids + forward_len * k, 
+        weights + forward_len * k, 
+        (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), 
+        (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), batch_size_tensor, backend);
 }

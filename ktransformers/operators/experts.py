@@ -139,7 +139,7 @@ class KExpertsCPU(KExpertsBase):
     output_gpu_map:dict = {} # Manage output tensor buffer on different gpu
     #stream_map:dict = {} # Manage cuda stream on different gpu
     # @TODO add yaml
-    CPU_INFER = CPUInfer(Config().cpu_infer)
+    CPU_INFER = CPUInfer(Config().cpu_infer) # cpu_infer: threads_num, 65
     def __init__(
         self,
         key: str,
@@ -191,9 +191,9 @@ class KExpertsCPU(KExpertsBase):
                 self.config.num_experts_per_tok,
                 self.config.hidden_size,
                 self.config.moe_intermediate_size,
-                64,
-                10,
-                1024,
+                64, # stride
+                10, # group_min_len
+                1024, # group_max_len
                 gate_ptr,
                 up_ptr,
                 down_ptr,
@@ -266,7 +266,8 @@ class KExpertsCPU(KExpertsBase):
                 else:
                     KExpertsCPU.output_cpu = torch.zeros((cuda_graphs, self.config.hidden_size), device="cpu", pin_memory=True, dtype=torch.bfloat16)
                     KExpertsCPU.bsz_tensor_cpu = torch.zeros((1), device="cpu", dtype=torch.int32, pin_memory=True)
-            
+
+    # calling this when decode        
     def submit_for_one_decode(self, input_tensor, expert_ids, weights, bsz_tensor=None, cuda_graph_idx=0):
         if bsz_tensor is None:
             bsz_tensor = torch.ones(1, device=input_tensor.device, dtype=torch.int32)
@@ -294,9 +295,12 @@ class KExpertsCPU(KExpertsBase):
             KExpertsCPU.output_gpu_map[self.out_device].copy_(KExpertsCPU.output_cpu, non_blocking=True)
             return KExpertsCPU.output_gpu_map[self.out_device]
 
+    # prefill stage
     def forward(self, input_tensor, expert_ids, weights, bsz_tensor=None, cuda_graph_idx=0):
         # generate, capture and run cuda graph
         # print(expert_ids)
+        # input_tensor (batch * seq_len, hidden_size)
+        # print(f"input_tensor.shape:{input_tensor.shape}, cuda_graph_idx:{cuda_graph_idx}")
         if bsz_tensor is None and (not torch.xpu.is_available() or input_tensor.size(0) > 1):
             bsz_tensor = torch.tensor([input_tensor.size(0)], device=input_tensor.device, dtype=torch.int32)
         if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
@@ -305,7 +309,16 @@ class KExpertsCPU(KExpertsBase):
                 KExpertsCPU.expert_ids_cpu[cuda_graph_idx].copy_(expert_ids, non_blocking=True)
                 KExpertsCPU.weights_cpu[cuda_graph_idx].copy_(weights, non_blocking=True)
                 KExpertsCPU.bsz_tensor_cpu[cuda_graph_idx].copy_(bsz_tensor, non_blocking=True)
-                self.cpu_infer.submit_with_cuda_stream(torch.cuda.current_stream().cuda_stream, self.moe.forward(expert_ids.size(0), expert_ids.size(-1), KExpertsCPU.expert_ids_cpu[cuda_graph_idx].data_ptr(), KExpertsCPU.weights_cpu[cuda_graph_idx].data_ptr(), KExpertsCPU.input_tensor_cpu[cuda_graph_idx].data_ptr(), KExpertsCPU.output_cpu[cuda_graph_idx].data_ptr(), KExpertsCPU.bsz_tensor_cpu[cuda_graph_idx].data_ptr()))
+                self.cpu_infer.submit_with_cuda_stream(torch.cuda.current_stream().cuda_stream, 
+                                                       self.moe.forward(expert_ids.size(0), 
+                                                                        expert_ids.size(-1), 
+                                                                        KExpertsCPU.expert_ids_cpu[cuda_graph_idx].data_ptr(), 
+                                                                        KExpertsCPU.weights_cpu[cuda_graph_idx].data_ptr(), 
+                                                                        KExpertsCPU.input_tensor_cpu[cuda_graph_idx].data_ptr(), 
+                                                                        KExpertsCPU.output_cpu[cuda_graph_idx].data_ptr(), 
+                                                                        KExpertsCPU.bsz_tensor_cpu[cuda_graph_idx].data_ptr()
+                                                                        )
+                                                    )
                 self.cpu_infer.sync_with_cuda_stream(torch.cuda.current_stream().cuda_stream)
                 KExpertsCPU.output_gpu_map[self.out_device][cuda_graph_idx].copy_(KExpertsCPU.output_cpu[cuda_graph_idx], non_blocking=True)
                 return KExpertsCPU.output_gpu_map[self.out_device][cuda_graph_idx]
@@ -674,8 +687,9 @@ class KTransformersExperts(BaseInjectedModule, KExpertsBase):
             self.prefill_experts = None
         self.gpu_mlp_type = prefill_op
         self.cpu_mlp_type = generate_op
-        self.mode = InferenceState.UNLOAD
+        self.mode = InferenceState.UNLOAD # default mode is UNLOAD, but is set to GENERATE when calling load()
 
+    # current ktrans implementation: no parameters are passed when calling load()
     def load(self, w: dict = None,  mode: InferenceState = None, warmup: bool = True):
         # TODO support w as input
         if not mode: mode = InferenceState.GENERATE
@@ -932,43 +946,82 @@ class KDeepseekV2MoE(BaseInjectedModule, DeepseekV2MoE):
             .type(new_x.dtype)
         )
         return final_out
-
+import pickle
 class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
     layer_counter = 0
+    record_buffer = []
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.layer_id = KDeepseekV3MoE.layer_counter
         KDeepseekV3MoE.layer_counter += 1
+
+        # 记录缓存buffer
+        # self.record_buffer = []
+        self.old_name = "start"
+
+    def flush_records(self, prompt_name):
+        """将缓存的记录保存为二进制文件"""
+        if not KDeepseekV3MoE.record_buffer:
+            return
+        folder = prompt_name.split("/")[-2]
+        os.makedirs(folder, exist_ok=True)
+        file_path = prompt_name + ".pkl"
+
+        # 如果文件存在，先加载之前的再追加
+        if os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                old_data = pickle.load(f)
+            combined = old_data + KDeepseekV3MoE.record_buffer
+        else:
+            combined = KDeepseekV3MoE.record_buffer
+
+        with open(file_path, "wb") as f:
+            pickle.dump(combined, f)
+            # print(f"\n================>>>>dumped {len(combined)} records to {file_path}\n")
+
+        KDeepseekV3MoE.record_buffer = []  # 清空缓存
     
     def record_topk_idx(self, prompt_name, mode, token_idx, layer_idx, topk_idx, hidden_states):
-        import json
-        if mode == "decode":
-            # directory = os.path.join("./", "topk_idx")
-            # if not os.path.exists(directory):
-            #     os.makedirs(directory)
-            file = prompt_name + ".json"
+        '''在使用记录函数时，要确保实际prompt文件数量比需要记录的prompt数量大1，也就是最后要有一个prompt文件来确保前一个的信息被完整记录'''
         
-            record = {
-                "mode": mode,
-                "token_idx": token_idx,
-                "layer_idx": layer_idx,
-                "topk_idx": topk_idx.tolist(),
-                "hidden_states": hidden_states.tolist(),
-            }
-            with open(file, "a") as f:
-                json.dump(record, f)
-                f.write("\n")
+        if mode != "decode":
+            return
+        
+        # print("\ncalling record")
+        if self.old_name == "start":
+            self.old_name = prompt_name
+
+        # 确保上一个prompt的残留缓存被写入文件    
+        if self.old_name != prompt_name and len(KDeepseekV3MoE.record_buffer) > 0 and self.layer_id == 0:
+            # print("flashing last\n")
+            self.flush_records(self.old_name)
+            self.old_name = prompt_name
+        
+        record = {
+            "mode": mode,
+            "token_idx": token_idx,
+            "layer_idx": layer_idx,
+            "topk_idx": topk_idx.tolist(),
+            "hidden_states": hidden_states.tolist(),
+        }
+        KDeepseekV3MoE.record_buffer.append(record)
+        # print(f"recorded {len(KDeepseekV3MoE.record_buffer)}, token{token_idx}, layer{layer_idx};\n")
+
+        if len(self.record_buffer) >= 5800:
+            # print("flashing\n")
+            self.flush_records(prompt_name)        
+
 
     def forward(self, hidden_states, prompt_name, mode, token_idx):
         identity = hidden_states
         orig_shape = hidden_states.shape
         sequence_length = orig_shape[1]
-        topk_idx, topk_weight = self.gate(hidden_states)
-        hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+        topk_idx, topk_weight = self.gate(hidden_states) # topk_weight are the scores
+        hidden_states = hidden_states.view(-1, hidden_states.shape[-1]) # reshape to (batch * sequence_length, hidden_dim)
 
         # if prompt_name is None:
         #     sys.exit("prompt_name is None, please set it to a valid value")
-        # self.record_topk_idx(prompt_name, mode, token_idx, self.layer_id, topk_idx, hidden_states)
+        self.record_topk_idx(prompt_name, mode, token_idx, self.layer_id, topk_idx, hidden_states)
         
         
         # only for generate phase
@@ -980,12 +1033,18 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
             y += y_
             y.resize_(*orig_shape)
             return y
-
+        
+        # prefill phase
         if self.config.n_shared_experts is not None:
             y_ = self.shared_experts(identity).squeeze(0)
             
         if isinstance(self.experts, KExpertsBase):
+            # Count the activited frequency of each expert in the current batch and layer
+            # topk_idx: (batch, seq_len, n_experts=8) batch = sequence_length here
+            # hidden_states: (batch * seq_len, hidden_size)
+
             y = self.moe_kexperts(hidden_states, topk_idx, topk_weight).view(*orig_shape).to(device=hidden_states.device)
+
         elif hidden_states.size(0) > 10:
             # TODO may bugs here
             y = (

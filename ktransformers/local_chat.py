@@ -6,6 +6,7 @@ Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
 """
 
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import platform
 import sys
 
@@ -141,7 +142,7 @@ def local_chat(
         os.system("clear")
 
 
-    def list_prompt_files_by_dataset(base_dir="./moe_analysis/prompt_datasets"):
+    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test_prompt"):
         dataset_files = {}
 
         for dataset_name in os.listdir(base_dir):
@@ -173,7 +174,7 @@ def local_chat(
             output_dir = os.path.join(output_base, dataset)
             os.makedirs(output_dir, exist_ok=True)
             prompt_name = output_base + "/" + dataset + "/" + file_name
-            prompt_name = None
+            # prompt_name = None
 
             print(f"output: - {prompt_name}")
 
@@ -194,8 +195,8 @@ def local_chat(
                 )
 
 
-            break
-        break
+        #     break
+        # break
 
 
     # while True:
