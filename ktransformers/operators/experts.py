@@ -983,7 +983,8 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
     
     def record_topk_idx(self, prompt_name, mode, token_idx, layer_idx, topk_idx, hidden_states):
         '''在使用记录函数时，要确保实际prompt文件数量比需要记录的prompt数量大1，也就是最后要有一个prompt文件来确保前一个的信息被完整记录'''
-        
+        if prompt_name is None:
+            return
         if mode != "decode":
             return
         
@@ -1023,12 +1024,17 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
         #     sys.exit("prompt_name is None, please set it to a valid value")
         self.record_topk_idx(prompt_name, mode, token_idx, self.layer_id, topk_idx, hidden_states)
         
-        
+        # print(f"seq_len:{sequence_length}")
         # only for generate phase
         if sequence_length == 1 and hasattr(self.experts.generate_experts, "submit_for_one_decode") and torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
+            # print("abccc")
             self.experts.generate_experts.submit_for_one_decode(hidden_states[0], topk_idx[0], topk_weight[0])
             if self.config.n_shared_experts is not None:
+                # print(f"shared_experts{self.config.n_shared_experts}")
+                shared_start = time.time()
                 y_ = self.shared_experts(identity).squeeze(0)
+                shared_end = time.time()
+                # print(f"shared_experts time: {(shared_end - shared_start)*1000:.4f} ms")
             y = self.experts.generate_experts.sync_for_one_decode().unsqueeze(0)
             y += y_
             y.resize_(*orig_shape)
@@ -1036,7 +1042,10 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
         
         # prefill phase
         if self.config.n_shared_experts is not None:
+            shared_start = time.time()
             y_ = self.shared_experts(identity).squeeze(0)
+            shared_end = time.time()
+            # print(f"shared_experts time: {(shared_end - shared_start)*1000:.4f} ms")
             
         if isinstance(self.experts, KExpertsBase):
             # Count the activited frequency of each expert in the current batch and layer

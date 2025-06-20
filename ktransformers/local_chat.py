@@ -174,7 +174,7 @@ def local_chat(
             output_dir = os.path.join(output_base, dataset)
             os.makedirs(output_dir, exist_ok=True)
             prompt_name = output_base + "/" + dataset + "/" + file_name
-            # prompt_name = None
+            prompt_name = None
 
             print(f"output: - {prompt_name}")
 

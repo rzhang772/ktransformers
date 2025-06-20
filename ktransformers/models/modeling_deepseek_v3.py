@@ -20,6 +20,7 @@
 """ PyTorch DeepSeek model."""
 import math
 import warnings
+import time
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -1209,6 +1210,7 @@ class DeepseekV3DecoderLayer(nn.Module):
 
         hidden_states = self.input_layernorm(hidden_states)
 
+        attn_start = time.time()
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
@@ -1221,12 +1223,17 @@ class DeepseekV3DecoderLayer(nn.Module):
             **kwargs,
         )
         hidden_states = residual + hidden_states
+        attn_end = time.time()
+        # print(f"Self Attention time: {(attn_end - attn_start) * 1000:.4f} ms")
 
+        mlp_start = time.time()
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         hidden_states = self.mlp(hidden_states, prompt_name, mode, token_idx)
         hidden_states = residual + hidden_states
+        mlp_end = time.time()
+        # print(f"MLP time: {(mlp_end - mlp_start) * 1000:.4f} ms")
 
         outputs = (hidden_states,)
 
