@@ -55,9 +55,11 @@
          });
      }
  
+     // 接受参数为一个 std::pair<intptr_t, intptr_t>，其中第一个元素是函数指针，第二个元素是参数指针
      void submit(std::pair<intptr_t, intptr_t> params) {
          void (*func)(void*) = (void (*)(void*))params.first;
          void* args = (void*)params.second;
+
          *((CPUInfer**)args) = this;
          func(args);
      }

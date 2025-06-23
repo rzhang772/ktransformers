@@ -26,15 +26,15 @@ def inject(module, local_optimization_dict, model_config:AutoConfig ,gguf_loader
                 if inject_module_meta["class"] != "default":
                     import_path = inject_module_meta["class"].split(".")
                     import_module_name = ".".join(import_path[:-1])
-                    gguf_loader.tensor_device_map[inject_module_meta["key"]] = inject_module_meta["kwargs"] if "kwargs" in inject_module_meta else dict()
+                    gguf_loader.tensor_device_map[inject_module_meta["key"]] = inject_module_meta["kwargs"] if "kwargs" in inject_module_meta else dict() # 为被替换的模块的gguf指定加载设备，根据yaml配置
                     import_class_name = import_path[-1]
-                    module_cls=getattr(__import__(import_module_name, fromlist=[""]), import_class_name)
+                    module_cls=getattr(__import__(import_module_name, fromlist=[""]), import_class_name) # import对应模块
                     print(f"Injecting {child_prefix} as", import_module_name, ".", import_class_name)
-                    inject_module=module_cls(key = inject_module_meta["key"], gguf_loader = gguf_loader, config = model_config, orig_module=child, **inject_module_meta["kwargs"])
+                    inject_module=module_cls(key = inject_module_meta["key"], gguf_loader = gguf_loader, config = model_config, orig_module=child, **inject_module_meta["kwargs"]) # 实例化对应模块
                     set_module(module, name, inject_module)
                 elif inject_module_meta["class"] == "default":
                     print(f"Injecting {child_prefix} as default")
-                    gguf_loader.tensor_device_map[inject_module_meta["key"]] = inject_module_meta["kwargs"] if "kwargs" in inject_module_meta else dict()
+                    gguf_loader.tensor_device_map[inject_module_meta["key"]] = inject_module_meta["kwargs"] if "kwargs" in inject_module_meta else dict() # 为没有被替换的模块指定加载设备，根据yaml配置
                 else:
                     raise Exception("inject_module_meta[\"class\"] must be \"default\" or a class path")
                 child_prefix += "."
@@ -130,7 +130,7 @@ def optimize_and_load_gguf(module: nn.Module, rule_file: str, gguf_path: str, mo
     load_weights(module.lm_head, weights_loader, "lm_head.", device=default_device)
     load_weights(module, weights_loader, device=default_device)
     module.gguf_loader = weights_loader
-    del_meta(module)
+    del_meta(module) # 在load_weights中已经使用实际参数替换掉了meta参数，这是是一个保险操作，避免有遗漏的meta参数导致后续报错。
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
     elif torch.xpu.is_available():

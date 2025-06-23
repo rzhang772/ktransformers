@@ -111,7 +111,7 @@ def load_cur_state_dict(module: nn.Module, gguf_loader: ModelLoader, prefix: str
         
         # TODO: Merge all loader.
         # I know this is ugly but lets do it for now.
-        if isinstance(gguf_loader, SafeTensorLoader):
+        if isinstance(gguf_loader, SafeTensorLoader): # 如果文件是safetensor格式，也就是非量化版本
             load_dequantized_tensor = gguf_loader.load_dequantized_tensor
         else:
             load_dequantized_tensor = gguf_loader.load_gguf_tensor
@@ -146,12 +146,12 @@ torch_device_mapping ={"cuda": "cuda:0", "xpu": "xpu:0"}
 
 def load_weights(module:nn.Module, gguf_loader:ModelLoader, prefix='', device="cuda"):
     #print(f"recursively loading weights {prefix}")
-    if not isinstance(module, base_operator.BaseInjectedModule):
+    if not isinstance(module, base_operator.BaseInjectedModule): # 如果是原始的模块，则在这里加载权重
         load_cur_state_dict(module, gguf_loader, prefix, device=device)
         for name, child in module._modules.items():
             load_weights(child, gguf_loader, prefix+name+".", device=device)
     else:
-        module.load()
+        module.load() # 如果是被注入的模块，则调用其load方法加载权重
 
 def tf_logits_warper(generation_config):
         """
