@@ -21,6 +21,7 @@
 import math
 import warnings
 import time
+import nvtx
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -387,7 +388,7 @@ class DeepseekV3MLP(nn.Module):
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
-
+    @nvtx.annotate("DeepseekV3MLP.forward")
     def forward(self, x, 
                 prompt_name: Optional[str] = None,
                 mode: Optional[str] = None, 
@@ -424,7 +425,7 @@ class MoEGate(nn.Module):
         import torch.nn.init as init
 
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
-
+    @nvtx.annotate("MoEGate.forward")
     def forward(self, hidden_states):
         bsz, seq_len, h = hidden_states.shape
         ### compute gating score
@@ -1171,7 +1172,7 @@ class DeepseekV3DecoderLayer(nn.Module):
         self.post_attention_layernorm = DeepseekV3RMSNorm(
             config.hidden_size, eps=config.rms_norm_eps
         )
-
+    @nvtx.annotate("DeepseekV3DecoderLayer.forward")
     def forward(
         self,
         hidden_states: torch.Tensor,

@@ -19,6 +19,7 @@ import torch
 import sys, os
 from ktransformers.operators.base_operator import BaseInjectedModule
 from tqdm import tqdm
+import nvtx
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build"))
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build", "Release"))
@@ -157,6 +158,7 @@ class KExpertsCPU(KExpertsBase):
         self.out_device = out_device
         self.backend = kwargs.get("backend", "llamafile")
 
+    @nvtx.annotate("KExpertsCPU.load")
     def load(self, w: dict | nn.Parameter | tuple | None = None, device:str|None = None, warmup:bool = False):
         if device:
             assert device.lower() == "cpu", "KExpertsCPU can only be loaded on CPU, Parameter \"device\" can be cpu or None."
@@ -267,7 +269,8 @@ class KExpertsCPU(KExpertsBase):
                     KExpertsCPU.output_cpu = torch.zeros((cuda_graphs, self.config.hidden_size), device="cpu", pin_memory=True, dtype=torch.bfloat16)
                     KExpertsCPU.bsz_tensor_cpu = torch.zeros((1), device="cpu", dtype=torch.int32, pin_memory=True)
 
-    # calling this when decode        
+    # calling this when decode   
+    @nvtx.annotate("KExpertsCPU.submit_for_one_decode")     
     def submit_for_one_decode(self, input_tensor, expert_ids, weights, bsz_tensor=None, cuda_graph_idx=0):
         if bsz_tensor is None:
             bsz_tensor = torch.ones(1, device=input_tensor.device, dtype=torch.int32)
@@ -296,6 +299,7 @@ class KExpertsCPU(KExpertsBase):
             return KExpertsCPU.output_gpu_map[self.out_device]
 
     # prefill stage
+    @nvtx.annotate("KExpertsCPU.forward")
     def forward(self, input_tensor, expert_ids, weights, bsz_tensor=None, cuda_graph_idx=0):
         # generate, capture and run cuda graph
         # print(expert_ids)
@@ -1012,7 +1016,7 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
             # print("flashing\n")
             self.flush_records(prompt_name)        
 
-
+    @nvtx.annotate("KDeepseekV3MoE.forward")
     def forward(self, hidden_states, prompt_name, mode, token_idx):
         identity = hidden_states
         orig_shape = hidden_states.shape
@@ -1022,7 +1026,7 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
 
         # if prompt_name is None:
         #     sys.exit("prompt_name is None, please set it to a valid value")
-        self.record_topk_idx(prompt_name, mode, token_idx, self.layer_id, topk_idx, hidden_states)
+        # self.record_topk_idx(prompt_name, mode, token_idx, self.layer_id, topk_idx, hidden_states)
         
         # print(f"seq_len:{sequence_length}")
         # only for generate phase

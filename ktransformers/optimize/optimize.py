@@ -16,6 +16,7 @@ from ktransformers.util.custom_loader import GGUFLoader, ModelLoaderFactory
 from ktransformers.util.utils import set_module, load_weights
 import itertools
 import copy
+import nvtx
 
 def inject(module, local_optimization_dict, model_config:AutoConfig ,gguf_loader:GGUFLoader, prefix=''):
     for name, child in module._modules.items():
@@ -113,7 +114,7 @@ def translate_model_config(model_config: PretrainedConfig):
     
     return model_config
 
-
+@nvtx.annotate("optimize_and_load_gguf")
 def optimize_and_load_gguf(module: nn.Module, rule_file: str, gguf_path: str, model_config: PretrainedConfig, default_device: str = "cuda:0"):
     with open(rule_file, 'r', encoding='utf-8') as f:
         rule_list = yaml.load(f.read(), Loader=yaml.FullLoader)

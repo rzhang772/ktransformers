@@ -35,6 +35,7 @@ from ktransformers.util.utils import prefill_and_generate, get_compute_capabilit
 from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.util.vendors import device_manager, get_device, to_device, GPUVendor
+import nvtx
 
 custom_models = {
     "DeepseekV2ForCausalLM": DeepseekV2ForCausalLM,
@@ -117,6 +118,8 @@ def local_chat(
         gguf_path = input(
             "please input the path of your gguf file(gguf file in the dir containing input gguf file must all belong to current model):"
         )
+
+    
     optimize_and_load_gguf(model, optimize_config_path, gguf_path, config, default_device=device)
     
     try:
@@ -142,7 +145,7 @@ def local_chat(
         os.system("clear")
 
 
-    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test_prompt"):
+    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test1"):
         dataset_files = {}
 
         for dataset_name in os.listdir(base_dir):

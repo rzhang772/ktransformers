@@ -7,6 +7,7 @@ Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
 import torch
 from torch import nn
 import warnings
+import nvtx
 import torch.nn.functional as F
 from ktransformers.operators.models import KLlamaModel
 from ktransformers.models.configuration_deepseek import DeepseekV2Config
@@ -680,7 +681,7 @@ class KDeepseekV2Attention(BaseInjectedModule, DeepseekV2Attention):
             attn_weights = None
 
         return attn_output, attn_weights, past_key_value
-
+    @nvtx.annotate("KDeepseekV2Attention.forward")
     def forward(
         self,
         hidden_states: torch.Tensor,

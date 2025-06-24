@@ -33,6 +33,7 @@ moe_analysis/test_prompt/
 moe_analysis/outputs/
 moe_analysis/figures/
 moe_analysis/runs/
+moe_analysis/test1/
 ktransformers/operators/test_topk/
 ktransformers/operators/topk_idx/
 profile/
