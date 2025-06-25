@@ -139,6 +139,7 @@ class KExpertsCPU(KExpertsBase):
     weights_cpu:Tensor = None
     output_cpu:Tensor = None
     output_gpu_map:dict = {} # Manage output tensor buffer on different gpu
+
     #stream_map:dict = {} # Manage cuda stream on different gpu
     # @TODO add yaml
     CPU_INFER = CPUInfer(Config().cpu_infer)
@@ -158,6 +159,8 @@ class KExpertsCPU(KExpertsBase):
         self.n_routed_experts = n_routed_experts
         self.out_device = out_device # 也就是generate_device, 这个参数是为了支持在cpu上运行的模型，输出tensor会被放到out_device上, 这里是cuda
         self.backend = kwargs.get("backend", "llamafile") # 从参数中获取backend类型，默认为llamafile
+
+        self.cached_experts = None
 
     def load(self, w: dict | nn.Parameter | tuple | None = None, device:str|None = None, warmup:bool = False):
         if device:
@@ -299,6 +302,46 @@ class KExpertsCPU(KExpertsBase):
                                                                     KExpertsCPU.output_cpu.data_ptr(), 
                                                                     KExpertsCPU.bsz_tensor_cpu.data_ptr()))
         
+    def submit_for_one_decode_with_expert_cache(self, input_tensor, expert_ids, weights, layer_id, bsz_tensor=None, cuda_graph_idx=0):
+
+        predicted_experts = [] # for cache
+        if bsz_tensor is None:
+            bsz_tensor = torch.ones(1, device=input_tensor.device, dtype=torch.int32)
+        if cuda_graph_idx != -1:
+            KExpertsCPU.input_tensor_cpu[cuda_graph_idx].copy_(input_tensor, non_blocking=True)
+            KExpertsCPU.expert_ids_cpu[cuda_graph_idx].copy_(expert_ids, non_blocking=True)
+            KExpertsCPU.weights_cpu[cuda_graph_idx].copy_(weights, non_blocking=True)
+            KExpertsCPU.bsz_tensor_cpu[cuda_graph_idx].copy_(bsz_tensor, non_blocking=True)
+            self.cpu_infer.submit_with_cuda_stream(torch.cuda.current_stream(self.out_device).cuda_stream, 
+                                                   self.moe.forward_with_cache(1, 
+                                                                    expert_ids.size(-1), 
+                                                                    layer_id, # for cache
+                                                                    self.cached_experts, # for cache
+                                                                    predicted_experts, # for cache
+                                                                    KExpertsCPU.expert_ids_cpu[cuda_graph_idx].data_ptr(), 
+                                                                    KExpertsCPU.weights_cpu[cuda_graph_idx].data_ptr(), 
+                                                                    KExpertsCPU.input_tensor_cpu[cuda_graph_idx].data_ptr(), 
+                                                                    KExpertsCPU.output_cpu[cuda_graph_idx].data_ptr(), 
+                                                                    KExpertsCPU.bsz_tensor_cpu[cuda_graph_idx].data_ptr()))
+        else:
+            KExpertsCPU.input_tensor_cpu.copy_(input_tensor, non_blocking=True)
+            KExpertsCPU.expert_ids_cpu.copy_(expert_ids, non_blocking=True)
+            KExpertsCPU.weights_cpu.copy_(weights, non_blocking=True)
+            KExpertsCPU.bsz_tensor_cpu.copy_(bsz_tensor, non_blocking=True)
+            self.cpu_infer.submit_with_cuda_stream(torch.cuda.current_stream(self.out_device).cuda_stream, 
+                                                   self.moe.forward_with_cache(1, 
+                                                                    expert_ids.size(-1),
+                                                                    layer_id, # for cache 
+                                                                    self.cached_experts, # for cache
+                                                                    predicted_experts, # for cache
+                                                                    KExpertsCPU.expert_ids_cpu.data_ptr(), 
+                                                                    KExpertsCPU.weights_cpu.data_ptr(), 
+                                                                    KExpertsCPU.input_tensor_cpu.data_ptr(), 
+                                                                    KExpertsCPU.output_cpu.data_ptr(), 
+                                                                    KExpertsCPU.bsz_tensor_cpu.data_ptr()))
+        # update cached_experts
+        self.cached_experts = predicted_experts # for cache
+
 
     def sync_for_one_decode(self, cuda_graph_idx=0):
         if cuda_graph_idx != -1:
@@ -1008,7 +1051,7 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
         
         # only for generate phase
         if sequence_length == 1 and hasattr(self.experts.generate_experts, "submit_for_one_decode") and torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
-            self.experts.generate_experts.submit_for_one_decode(hidden_states[0], topk_idx[0], topk_weight[0])
+            self.experts.generate_experts.submit_for_one_decode(hidden_states[0], topk_idx[0], topk_weight[0], self.layer_id)
             if self.config.n_shared_experts is not None:
                 y_ = self.shared_experts(identity).squeeze(0)
             y = self.experts.generate_experts.sync_for_one_decode().unsqueeze(0)

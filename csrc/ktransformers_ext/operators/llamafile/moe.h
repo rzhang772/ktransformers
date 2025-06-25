@@ -54,6 +54,10 @@ class MOE {
     void forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
     void forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
     void forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, int* batch_size_tensor, Backend* backend);
+    
+    // for cache
+    void forward_with_cache(int qlen, int k, int layer_id, const uint64_t* cached_experts, const uint64_t* predicted_experts, const uint64_t* expert_ids, const float* weights, const void* input, void* output, int* batch_size_tensor, Backend* backend);
+
 
    private:
     MOEConfig config_;

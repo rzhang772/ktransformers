@@ -10,6 +10,7 @@
 #include "moe.h"
 #include <iostream>
 #include <cstdint>
+#include <cassert>
 
 #ifdef USE_NUMA
 #include <numa.h>
@@ -364,4 +365,36 @@ void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weig
 
     batch_size_tensor[0] -= forward_len;
     forward(qlen - forward_len, k, expert_ids + forward_len * k, weights + forward_len * k, (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), batch_size_tensor, backend);
+}
+
+void MOE::forward_with_cache(int qlen, int k, int layer_id, const uint64_t* cached_experts, const uint64_t* predicted_experts, const uint64_t* expert_ids, const float* weights, const void* input, void* output, int* batch_size_tensor, Backend* backend) {
+    /**
+    1. compute expert in cpu & compute expert cached in GPU asynchronously
+    2. update cached experts */
+    
+    
+    qlen = batch_size_tensor[0];
+    if (qlen != 1) {
+        std::cerr << "MOE::forward_with_cache only support qlen == 1, but got " << qlen << std::endl;
+        abort();
+    }
+
+    
+
+    if (qlen < config_.group_min_len) {
+        for (int i = 0; i < qlen; i++) {
+            forward_one(k, 
+                expert_ids + i * k, 
+                weights + i * k, 
+                (uint8_t*)input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), 
+                (uint8_t*)output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), 
+                backend);
+        }
+        return;
+    }
+    // int forward_len = std::min(config_.group_max_len, qlen);
+    // forward_many(forward_len, k, expert_ids, weights, input, output, backend);
+
+    // batch_size_tensor[0] -= forward_len;
+    // forward(qlen - forward_len, k, expert_ids + forward_len * k, weights + forward_len * k, (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), batch_size_tensor, backend);
 }
