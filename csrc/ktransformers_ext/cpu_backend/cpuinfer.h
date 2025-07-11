@@ -58,7 +58,7 @@
      void submit(std::pair<intptr_t, intptr_t> params) {
          void (*func)(void*) = (void (*)(void*))params.first;
          void* args = (void*)params.second;
-         *((CPUInfer**)args) = this;
+         *((CPUInfer**)args) = this; // 将当前对象指针传入，方便func内部调用，也就是说在func内部来访问task_queue_和backend_等成员变量
          func(args);
      }
  
@@ -70,7 +70,7 @@
         #if defined(KTRANSFORMERS_USE_CUDA) || defined(KTRANSFORMERS_USE_MUSA) || defined(KTRANSFORMERS_USE_ROCM)
          void (*func)(void*) = (void (*)(void*))params.first;
          void* args = (void*)params.second;
-         *((CPUInfer**)args) = this;
+         *((CPUInfer**)args) = this; 
          cudaLaunchHostFunc((cudaStream_t)user_cuda_stream, (cudaHostFn_t)func, args);
         #else
          throw std::runtime_error("submit_with_cuda_stream is not supported on this platforma");

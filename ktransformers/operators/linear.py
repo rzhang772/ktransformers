@@ -13,6 +13,7 @@ Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
 
 import ctypes
 import torch
+import nvtx
 from torch import Tensor, nn
 if not torch.xpu.is_available():
     import KTransformersOps
@@ -599,6 +600,7 @@ class KLinearMarlin(KLinearBase):
         self.k = self.in_features
         self.n = self.out_features
 
+    @nvtx.annotate("KLinearMarlin.load")
     def load(self, w: dict | nn.Parameter | tuple | None = None, device: str|None = None):
         if self.loaded: return
         if device is None: device = self.device
@@ -645,6 +647,7 @@ class KLinearMarlin(KLinearBase):
         self.n = weight.shape[1]
         self.loaded = True
 
+    @nvtx.annotate("KLinearMarlin.forward", color="blue")
     def forward(self, x: torch.Tensor, bsz_tensor: torch.Tensor=None, **kwargs) -> torch.Tensor:
         # Only support input x as BF16 and FP16
         x = x.to(self.device)
@@ -901,6 +904,7 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
             self.generate_linear = None
         self.mode = InferenceState.UNLOAD
 
+    @nvtx.annotate("KTransformersLinear.forward")
     def forward(self, x, bsz_tensor=None):
         if self.mode == InferenceState.PREFILL:
             assert self.prefill_linear is not None, "cpu linear is not initialized"
@@ -909,7 +913,8 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
             assert self.generate_linear is not None, "gpu linear is not initialized"
             y = self.generate_linear.forward(x, bsz_tensor)
         return y
-
+    
+    @nvtx.annotate("KTransformersLinear.load")
     def load(self, w: dict | nn.Parameter | tuple | None = None, mode: InferenceState = InferenceState.GENERATE):
         if not mode:
             mode = InferenceState.GENERATE

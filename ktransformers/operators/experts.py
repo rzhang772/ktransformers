@@ -269,7 +269,7 @@ class KExpertsCPU(KExpertsBase):
                     KExpertsCPU.output_cpu = torch.zeros((cuda_graphs, self.config.hidden_size), device="cpu", pin_memory=True, dtype=torch.bfloat16)
                     KExpertsCPU.bsz_tensor_cpu = torch.zeros((1), device="cpu", dtype=torch.int32, pin_memory=True)
 
-    # calling this when decode   
+    # when generate while also capture cuda graph
     @nvtx.annotate("KExpertsCPU.submit_for_one_decode")     
     def submit_for_one_decode(self, input_tensor, expert_ids, weights, bsz_tensor=None, cuda_graph_idx=0):
         if bsz_tensor is None:
@@ -506,6 +506,7 @@ class KExpertsMarlin(KExpertsBase):
             res = {"gate": gate, "up": up, "down": down}
         return res
 
+    @nvtx.annotate("KExpertsMarlin.forward")
     def forward(self, hidden_states_cpu: torch.Tensor, selected_experts_cpu: torch.Tensor, routing_weights_cpu: torch.Tensor) -> torch.Tensor:
         org_dtype = hidden_states_cpu.dtype
         org_device = hidden_states_cpu.device
@@ -1029,7 +1030,7 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
         # self.record_topk_idx(prompt_name, mode, token_idx, self.layer_id, topk_idx, hidden_states)
         
         # print(f"seq_len:{sequence_length}")
-        # only for generate phase
+        # only for generate phase and is capturing the cuda graph
         if sequence_length == 1 and hasattr(self.experts.generate_experts, "submit_for_one_decode") and torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
             # print("abccc")
             self.experts.generate_experts.submit_for_one_decode(hidden_states[0], topk_idx[0], topk_weight[0])
@@ -1044,7 +1045,7 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
             y.resize_(*orig_shape)
             return y
         
-        # prefill phase
+        # prefill and generate phase without capturing the cuda graph
         if self.config.n_shared_experts is not None:
             shared_start = time.time()
             y_ = self.shared_experts(identity).squeeze(0)
