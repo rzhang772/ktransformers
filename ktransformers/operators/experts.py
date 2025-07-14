@@ -19,6 +19,7 @@ import torch
 import sys, os
 from ktransformers.operators.base_operator import BaseInjectedModule
 from tqdm import tqdm
+import nvtx
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build"))
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build", "Release"))
@@ -352,10 +353,12 @@ class KExpertsCPU(KExpertsBase):
             self.cpu_infer.sync_with_cuda_stream(torch.cuda.current_stream(self.out_device).cuda_stream)
             KExpertsCPU.output_gpu_map[self.out_device].copy_(KExpertsCPU.output_cpu, non_blocking=True)
             return KExpertsCPU.output_gpu_map[self.out_device]
-
-    def forward(self, input_tensor, expert_ids, weights, bsz_tensor=None, cuda_graph_idx=0):
+    @nvtx.annotate("KExpertsCPU.forward")
+    def forward(self, input_tensor, expert_ids, weights, shared_experts = None, bsz_tensor=None, cuda_graph_idx=0):
         # generate, capture and run cuda graph
         # print(expert_ids)
+        identity = input_tensor
+        input_tensor = input_tensor.view(-1, input_tensor.size(-1)) # shape [batch_size * sequence_length, hidden_dim]  
         if bsz_tensor is None and (not torch.xpu.is_available() or input_tensor.size(0) > 1):
             bsz_tensor = torch.tensor([input_tensor.size(0)], device=input_tensor.device, dtype=torch.int32) # device = cuda
         if torch.cuda.is_available() and torch.cuda.is_current_stream_capturing(): # 检测当前stream是否正在被cuda graph捕获
@@ -412,8 +415,12 @@ class KExpertsCPU(KExpertsBase):
             bsz_tensor = bsz_tensor.contiguous().cpu()
             output = torch.empty_like(input_tensor).contiguous()
             self.cpu_infer.submit(self.moe.forward(expert_ids.size(0), expert_ids.size(1), expert_ids.data_ptr(), weights.data_ptr(), input_tensor.data_ptr(), output.data_ptr(), bsz_tensor.data_ptr()))
+            y_ = shared_experts(identity)
             self.cpu_infer.sync()
-            return output.to(device=object.__getattribute__(self, "out_device"))
+            output = output.to(device=object.__getattribute__(self, "out_device")).view(identity.shape)
+            output += y_
+            return output
+            # return output.to(device=object.__getattribute__(self, "out_device"))
     
     def unload(self):
         return
@@ -566,6 +573,7 @@ class KExpertsMarlin(KExpertsBase):
             res = {"gate": gate, "up": up, "down": down}
         return res
 
+    @nvtx.annotate("KExpertsMarlin.forward")
     def forward(self, hidden_states_cpu: torch.Tensor, selected_experts_cpu: torch.Tensor, routing_weights_cpu: torch.Tensor) -> torch.Tensor:
         org_dtype = hidden_states_cpu.dtype
         org_device = hidden_states_cpu.device
@@ -601,7 +609,7 @@ class KExpertsMarlin(KExpertsBase):
             final_hidden_states.index_add_(0, top_x, current_hidden_states)
         
         return final_hidden_states.to(dtype=org_dtype, device=org_device)
-    
+
 # untested, CUDA OOM
 class KExpertsTorch(KExpertsBase):
     expert_num: int
@@ -781,10 +789,11 @@ class KTransformersExperts(BaseInjectedModule, KExpertsBase):
             self.prefill_experts.unload()
         self.device = self.generate_experts.device
 
-    def forward(self, input_tensor, expert_ids, weights):
+    @nvtx.annotate("KTransformersExperts.forward")
+    def forward(self, input_tensor, expert_ids, weights, shared_experts=None):
         if self.mode == InferenceState.GENERATE:
             assert self.generate_experts is not None, "generate_experts is None"
-            return self.generate_experts.forward(input_tensor, expert_ids, weights)
+            return self.generate_experts.forward(input_tensor, expert_ids, weights, shared_experts=shared_experts)
         elif self.mode == InferenceState.PREFILL:
             assert self.prefill_experts is not None, "prefill_experts is None"
             return self.prefill_experts.forward(input_tensor, expert_ids, weights)
@@ -1036,13 +1045,14 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
             with open(file, "a") as f:
                 json.dump(record, f)
                 f.write("\n")
-
+    
+    @nvtx.annotate("KDeepseekV3MoE.forward")
     def forward(self, hidden_states, prompt_name, mode, token_idx):
-        identity = hidden_states
+        identity = hidden_states # shape [batch_size, sequence_length, hidden_dim]
         orig_shape = hidden_states.shape
         sequence_length = orig_shape[1]
         topk_idx, topk_weight = self.gate(hidden_states)
-        hidden_states = hidden_states.view(-1, hidden_states.shape[-1])
+        # hidden_states = hidden_states.view(-1, hidden_states.shape[-1]) # shape [batch_size * sequence_length, hidden_dim]
 
         # if prompt_name is None:
         #     sys.exit("prompt_name is None, please set it to a valid value")
@@ -1061,12 +1071,13 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
 
         # for prefill phase
         # shared experts直接计算
-        if self.config.n_shared_experts is not None:
-            y_ = self.shared_experts(identity).squeeze(0)
+        # if self.config.n_shared_experts is not None:
+        #     y_ = self.shared_experts(identity).squeeze(0)
 
-        # routed experts 如果是KTrans的实现，则进入experts的forward方法    
+        # routed experts 如果是KTrans的实现，则进入experts的forward方法  
+        # 修改：将shared_experts的参数传入routed experts的forward方法实现并行计算  
         if isinstance(self.experts, KExpertsBase):
-            y = self.moe_kexperts(hidden_states, topk_idx, topk_weight).view(*orig_shape).to(device=hidden_states.device)
+            y = self.moe_kexperts(hidden_states, topk_idx, topk_weight, shared_experts=self.shared_experts).view(*orig_shape).to(device=hidden_states.device)
         elif hidden_states.size(0) > 10:
             # TODO may bugs here
             y = (
@@ -1081,15 +1092,15 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
                 .view(*orig_shape)
                 .to(device=hidden_states.device)
             )
-        if self.config.n_shared_experts is not None:
-            y += y_
+        # if self.config.n_shared_experts is not None:
+        #     y += y_
         return y
 
 
 
     @torch.no_grad()
-    def moe_kexperts(self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor) -> torch.Tensor:
-        outs = self.experts(x, topk_ids, topk_weight)
+    def moe_kexperts(self, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor, shared_experts = None) -> torch.Tensor:
+        outs = self.experts(x, topk_ids, topk_weight, shared_experts)
         return outs
 
     @torch.no_grad()

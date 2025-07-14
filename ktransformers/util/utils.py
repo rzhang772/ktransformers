@@ -222,7 +222,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     def decode_one_tokens(cuda_graph_runner, cur_token, position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph: bool = True, prompt_name = None, token_idx = None):
         if cuda_graph_runner is None:
             use_cuda_graph = False
-        # use_cuda_graph = False
+        use_cuda_graph = False
         if use_cuda_graph:
             logits = cuda_graph_runner(cur_token, position_ids, cache_position)
         else:

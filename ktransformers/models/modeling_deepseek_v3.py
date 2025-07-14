@@ -20,6 +20,7 @@
 """ PyTorch DeepSeek model."""
 import math
 import warnings
+import nvtx
 from typing import List, Optional, Tuple, Union
 
 import torch
@@ -387,6 +388,7 @@ class DeepseekV3MLP(nn.Module):
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
+    @nvtx.annotate("DeepseekV3MLP.forward")
     def forward(self, x, 
                 prompt_name: Optional[str] = None,
                 mode: Optional[str] = None, 
@@ -424,6 +426,7 @@ class MoEGate(nn.Module):
 
         init.kaiming_uniform_(self.weight, a=math.sqrt(5))
 
+    @nvtx.annotate("MoEGate.forward")
     def forward(self, hidden_states):
         bsz, seq_len, h = hidden_states.shape
         ### compute gating score
