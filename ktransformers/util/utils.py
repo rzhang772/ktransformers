@@ -8,6 +8,7 @@ Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
 '''
 import torch
 from torch import nn
+import nvtx
 import itertools
 import time
 import enum
@@ -204,6 +205,7 @@ def tf_logits_warper(generation_config):
             warpers.append(LogitNormalization())
         return warpers
 
+@nvtx.annotate("prefill_and_generate")
 def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cuda_graph: bool = True,
                          mode = 'normal', force_think: bool = False, chunk_size = 16384, use_flashinfer_mla = False,
                          num_heads = None, head_dim_ckv = None, head_dim_kpe = None, q_head_dim = None, prompt_name = None):
@@ -219,6 +221,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
 
     tokens = []
     
+    @nvtx.annotate("decode_one_tokens")
     def decode_one_tokens(cuda_graph_runner, cur_token, position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph: bool = True, prompt_name = None, token_idx = None):
         if cuda_graph_runner is None:
             use_cuda_graph = False
@@ -256,6 +259,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         return next_token
     
     # TODO: use CUDA Graph for chunk prefill, may get small improvement
+    @nvtx.annotate("chunk_prefill")
     def chunk_prefill(inputs, cache_position, past_key_values):
         if mode == "long_context":
             inputs_embeds = model.model.embed_tokens(inputs.to("cpu"))

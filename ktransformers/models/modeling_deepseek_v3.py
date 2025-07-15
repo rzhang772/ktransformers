@@ -1174,6 +1174,7 @@ class DeepseekV3DecoderLayer(nn.Module):
             config.hidden_size, eps=config.rms_norm_eps
         )
 
+    @nvtx.annotate("DeepseekV3DecoderLayer.forward")
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -1394,6 +1395,7 @@ class DeepseekV3Model(DeepseekV3PreTrainedModel):
         self.embed_tokens = value
 
     @add_start_docstrings_to_model_forward(DeepseekV3_INPUTS_DOCSTRING)
+    @nvtx.annotate("DeepseekV3Model.forward")
     def forward(
         self,
         input_ids: torch.LongTensor = None,

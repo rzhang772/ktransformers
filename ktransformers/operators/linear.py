@@ -12,6 +12,7 @@ Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
 
 
 import ctypes
+import nvtx
 import torch
 from torch import Tensor, nn
 if not torch.xpu.is_available():
@@ -645,6 +646,7 @@ class KLinearMarlin(KLinearBase):
         self.n = weight.shape[1]
         self.loaded = True
 
+    @nvtx.annotate("KLinearMarlin.forward")
     def forward(self, x: torch.Tensor, bsz_tensor: torch.Tensor=None, **kwargs) -> torch.Tensor:
         # Only support input x as BF16 and FP16
         x = x.to(self.device)
@@ -901,6 +903,7 @@ class KTransformersLinear(BaseInjectedModule, KLinearBase):
             self.generate_linear = None
         self.mode = InferenceState.UNLOAD
 
+    @nvtx.annotate("KTransformersLinear.forward")
     def forward(self, x, bsz_tensor=None):
         if self.mode == InferenceState.PREFILL:
             assert self.prefill_linear is not None, "cpu linear is not initialized"
