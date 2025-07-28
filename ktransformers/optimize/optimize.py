@@ -124,6 +124,12 @@ def optimize_and_load_gguf(module: nn.Module, rule_file: str, gguf_path: str, mo
     model_config = translate_model_config(model_config)
 
     weights_loader = ModelLoaderFactory.create_loader(gguf_path)
+    # 打印gguf_loader的tensor信息
+    # with open("log_tensor_info.txt", "w", encoding="utf-8") as f:
+    #     print(weights_loader.tensor_info, file=f)
+    # print(weights_loader.tensor_info)
+    # exit(0)
+
     with torch.device("meta"):
         inject(module, optimize_config, model_config, weights_loader)
     # pre load lm_head because its big inter result

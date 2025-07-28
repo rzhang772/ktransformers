@@ -7,7 +7,7 @@ Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
 
 import os
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import platform
 import sys
 
@@ -118,6 +118,7 @@ def local_chat(
         gguf_path = input(
             "please input the path of your gguf file(gguf file in the dir containing input gguf file must all belong to current model):"
         )
+    # print(model)
     optimize_and_load_gguf(model, optimize_config_path, gguf_path, config, default_device=device)
     
     try:
@@ -125,7 +126,7 @@ def local_chat(
     except Exception as e:
         print(f"generation config can't auto create, make default. Message: {e}")
         gen_config = GenerationConfig(
-            temperature=0.6,
+            temperature=1e-5,
             top_p=0.95,
             do_sample=True
         )
@@ -137,10 +138,10 @@ def local_chat(
     logging.basicConfig(level=logging.INFO)
 
     system = platform.system()
-    if system == "Windows":
-        os.system("cls")
-    else:
-        os.system("clear")
+    # if system == "Windows":
+    #     os.system("cls")
+    # else:
+    #     os.system("clear")
 
 
     def list_prompt_files_by_dataset(base_dir="./moe_analysis/test1"):

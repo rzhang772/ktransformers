@@ -109,6 +109,7 @@ def load_cur_state_dict(module: nn.Module, gguf_loader: ModelLoader, prefix: str
     for name, param in local_state.items():
         key = prefix + name
         translated_key = key
+        print(f"==========>>> loading {translated_key} to {device}")
         
         # TODO: Merge all loader.
         # I know this is ugly but lets do it for now.

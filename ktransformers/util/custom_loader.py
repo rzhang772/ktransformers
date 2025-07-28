@@ -417,6 +417,34 @@ class GGUFLoader(ModelLoader):
         values = values.view(shape[-2::-1])
 
         return values
+    
+    def load_ggml_expert_from_weights(self, data, expert_id, elements_per_expert, ggml_type):
+        '''
+        从已加载的数据中抽取指定专家的权重
+        '''
+        if ggml_type not in GGML_NAMES:
+            raise NotImplementedError(f"ggml_type {ggml_type} not implemented")
+        ggml_name = GGML_NAMES[ggml_type]
+        # TODO: experts may fused in quant block, split it
+        assert elements_per_expert % GGML_ELEMENTS_PER_BLOCK[ggml_name] == 0, "experts may fused in quant block, please use CPU dequant"
+
+        blocks_per_experts = elements_per_expert // GGML_ELEMENTS_PER_BLOCK[ggml_name]
+        block_size = GGML_BLOCK_SIZES[ggml_name]
+        offset = expert_id * block_size * blocks_per_experts
+        data = data[offset: offset + block_size * blocks_per_experts]
+        return torch.from_numpy(data)
+
+    def dequantize_expert(self, expert_tensor, ggml_type, target_dtype = torch.get_default_dtype(), device = "cuda"):
+        if ggml_type not in GGML_NAMES:
+            raise NotImplementedError(f"ggml_type {ggml_type} not implemented")
+        ggml_name = GGML_NAMES[ggml_type]
+        if "cuda" in device.lower():
+            values = GGML_DEQUANTIZE_GPU[ggml_name](expert_tensor, device, target_dtype)
+        else:
+            values = GGML_DEQUANTIZE[ggml_name](expert_tensor)
+            values = torch.from_numpy(values.copy())
+        
+        return values
 
     def load_gguf_tensor(self, name: str, device:str = "cpu", target_dtype = None)->torch.Tensor:
         name = translate_name_to_gguf(name)

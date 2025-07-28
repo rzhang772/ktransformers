@@ -541,6 +541,7 @@ class MOEBindings {
             int k;
             const uint64_t *expert_ids;
             const float *weights;
+            const uint64_t *in_gpu_mask; // Use bool for in_gpu_mask
             const void *input;
             void *output;
             int *batch_size_tensor;
@@ -549,17 +550,22 @@ class MOEBindings {
             Args *args_ = (Args *)args;
             args_->cpuinfer->enqueue(
                 &MOE::forward, args_->moe, args_->qlen, args_->k,
-                args_->expert_ids, args_->weights, args_->input, args_->output, args_->batch_size_tensor);
+                args_->expert_ids, args_->weights, 
+                args_->in_gpu_mask, 
+                args_->input, args_->output, args_->batch_size_tensor);
         }
         static std::pair<intptr_t, intptr_t>
         cpuinfer_interface(MOE &moe, int qlen, int k, intptr_t expert_ids,
-                           intptr_t weights, intptr_t input, intptr_t output, intptr_t batch_size_tensor) {
+                           intptr_t weights, 
+                           intptr_t in_gpu_mask, 
+                           intptr_t input, intptr_t output, intptr_t batch_size_tensor) {
             Args *args = new Args{nullptr,
                                   &moe,
                                   qlen,
                                   k,
                                   (const uint64_t *)expert_ids,
                                   (const float *)weights,
+                                  (const uint64_t *)in_gpu_mask,
                                   (const void *)input,
                                   (void *)output,
                                   (int *)batch_size_tensor};

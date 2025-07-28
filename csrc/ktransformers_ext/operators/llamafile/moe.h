@@ -25,13 +25,13 @@
 #include "llamafile/sgemm.h"
 
 struct MOEConfig {
-    int expert_num;
-    int routed_expert_num;
-    int hidden_size;
-    int intermediate_size;
-    int stride;
-    int group_min_len;
-    int group_max_len;
+    int expert_num;            // 256
+    int routed_expert_num;// 8
+    int hidden_size;// 7168
+    int intermediate_size;// 2048
+    int stride;// 64
+    int group_min_len;// 10
+    int group_max_len;// 1024
     void* gate_proj;
     void* up_proj;
     void* down_proj;
@@ -51,12 +51,31 @@ class MOE {
     MOE(MOEConfig);
     ~MOE();
     void warm_up(Backend* backend);
-    void forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
-    void forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend);
-    void forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, int* batch_size_tensor, Backend* backend);
+    void forward_one(int k, const uint64_t* expert_ids, const float* weights, 
+        const uint64_t* in_gpu_mask, 
+        const void* input, 
+        void* output, 
+        Backend* backend);
+    void forward_many(int qlen, 
+        int k, 
+        const uint64_t* expert_ids, 
+        const float* weights,
+        const uint64_t* in_gpu_mask, 
+        const void* input, 
+        void* output, 
+        Backend* backend);
+    void forward(int qlen, 
+        int k, 
+        const uint64_t* expert_ids, 
+        const float* weights, 
+        const uint64_t* in_gpu_mask, 
+        const void* input, 
+        void* output, 
+        int* batch_size_tensor, 
+        Backend* backend);
     
     // for cache
-    void forward_with_cache(int qlen, int k, int layer_id, const uint64_t* cached_experts, const uint64_t* predicted_experts, const uint64_t* expert_ids, const float* weights, const void* input, void* output, int* batch_size_tensor, Backend* backend);
+    // void forward_with_cache(int qlen, int k, int layer_id, const uint64_t* cached_experts, const uint64_t* predicted_experts, const uint64_t* expert_ids, const float* weights, const void* input, void* output, int* batch_size_tensor, Backend* backend);
 
 
    private:

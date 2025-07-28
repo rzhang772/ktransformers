@@ -394,7 +394,7 @@ class DeepseekV3MLP(nn.Module):
                 mode: Optional[str] = None, 
                 token_idx: Optional[torch.Tensor] = None):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-        return down_proj
+        return down_proj # shape: [batch_size, seq_len, hidden_size]
 
 
 class MoEGate(nn.Module):

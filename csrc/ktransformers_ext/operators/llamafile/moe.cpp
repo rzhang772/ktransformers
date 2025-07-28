@@ -127,7 +127,9 @@ void MOE::warm_up(Backend* backend) {
     for (int i = 0; i < config_.expert_num; i++) {
         uint64_t expert_ids = i;
         float weights = 0;
-        forward_one(1, &expert_ids, &weights, input.data(), output.data(), backend);
+        forward_one(1, &expert_ids, &weights, 
+            nullptr, 
+            input.data(), output.data(), backend);
     }
 }
 
@@ -135,9 +137,34 @@ static float act_fn(float x) {
     return x / (1.0f + expf(-x));
 }
 
-void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend) {
+
+/**
+forward one总结：
+一次只有一个token，即
+expert_ids: list, 长度k
+weights: list, 长度k
+input: [1, hidden_size]，输入的token
+output: [1, hidden_size]，输出的token
+
+1. 首先判断input数据类型是不是计算用的类型，如果不是则转换为计算用的类型 fp32，然后让gate_inout_ptr和up_input_ptr指向input
+2. 计算gate_proj @ input和up_proj @ input和激活函数，得到gate_output_ptr和up_output_ptr。并行逻辑为将gate_proj和up_proj矩阵按列切成若干块，每块为[hidden_size, stride]
+3. 计算down_proj, 并行逻辑为将down_proj矩阵按列切成若干块，每块为[intermediate_size, stride]，得到down_output_ptr并进行加权
+
+*/
+void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights,
+     const uint64_t* in_gpu_mask, 
+     const void* input, void* output, Backend* backend) {
     const void* gate_input_ptr;
     const void* up_input_ptr;
+
+    // if (in_gpu_mask != nullptr){
+    //     for(int i=0;i<256;i++){
+    //         std::cout<<in_gpu_mask[i]<<" ";
+    //     }
+    //     std::cout<<std::endl;
+    // }
+    
+
     if (config_.hidden_type == ggml_internal_get_type_traits(config_.gate_type).vec_dot_type && config_.hidden_type == ggml_internal_get_type_traits(config_.up_type).vec_dot_type) {
         gate_input_ptr = up_input_ptr = input;
     } else {
@@ -161,12 +188,25 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, c
         }
     }
 
-    int nth = config_.intermediate_size / config_.stride; // stride = 64
+    int nth = config_.intermediate_size / config_.stride; // stride = 64, 2048/64=32, 32*8=256 tasks， 即每个矩阵按照列切成32块
     backend->do_work_stealing_job(nth * k, nullptr, [&](int task_id) {
         int expert_idx = task_id / nth;
         uint64_t expert_id = expert_ids[expert_idx];
-        int ith = task_id % nth;
+
+        // printf("====================in forward_one() gate and up before gpu mask====================\n");
+        // 检查是否在 GPU 上, 如果在 GPU 上则跳过计算
+        if(in_gpu_mask != nullptr) {
+            // Use uint64_t for in_gpu_mask to match expert_ids
+            // This assumes in_gpu_mask is a 1D array where each entry corresponds to an expert_id
+            // If the expert_id is in GPU, skip the computation
+            // Note: Ensure that in_gpu_mask is properly initialized and passed
+            // std::cout << "expert_id: " << expert_id << ", in_gpu_mask[expert_id]: " << in_gpu_mask[expert_id] << std::endl;
+            if (in_gpu_mask[expert_id]) return;
+        }
+
+        int ith = task_id % nth; // 第i块/32块
         
+        // gate_proj_: [256*2048*4032] config_.hidden_size7168 * ggml_type_size(config_.up_type)144 / ggml_blck_size(config_.up_type)256 = 4032
         #ifdef USE_NUMA
         void* gate_proj_ptr = (uint8_t*)gate_proj_numa_[Backend::numa_node] + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
         #else
@@ -174,9 +214,9 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, c
         #endif
 
         // 计算 gate @ input
-        float* gate_output_ptr = s_gate_output_[expert_idx] + ith * config_.stride;
+        float* gate_output_ptr = s_gate_output_[expert_idx] + ith * config_.stride; // 第idx个expert第ith块的输出
         llamafile_sgemm(config_.stride, 1, config_.hidden_size / ggml_blck_size(config_.gate_type), gate_proj_ptr, config_.hidden_size / ggml_blck_size(config_.gate_type), gate_input_ptr, config_.hidden_size / ggml_blck_size(config_.gate_type), gate_output_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.gate_type, ggml_internal_get_type_traits(config_.gate_type).vec_dot_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
-
+        // printf("====================in forward_one() after gate====================\n");
         #ifdef USE_NUMA
         void* up_proj_ptr = (uint8_t*)up_proj_numa_[Backend::numa_node] + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
         #else
@@ -186,27 +226,36 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, c
         // 计算 up @ input
         float* up_output_ptr = s_up_output_[expert_idx] + ith * config_.stride;
         llamafile_sgemm(config_.stride, 1, config_.hidden_size / ggml_blck_size(config_.up_type), up_proj_ptr, config_.hidden_size / ggml_blck_size(config_.up_type), up_input_ptr, config_.hidden_size / ggml_blck_size(config_.up_type), up_output_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.up_type, ggml_internal_get_type_traits(config_.up_type).vec_dot_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
+        // printf("====================in forward_one() after up====================\n");
         
         // 计算 intermediate_fp32 = act_fn(gate_output) * up_output
+        // 这一块中每一个列向量计算结果的输出值做计算 -》 s_intermediate_fp32_ shape [k, 2048]
         for (int i = ith * config_.stride; i < (ith + 1) * config_.stride; i++) {
             s_intermediate_fp32_[expert_idx][i] = act_fn(s_gate_output_[expert_idx][i]) * s_up_output_[expert_idx][i];
         }
 
         // 将 intermediate_fp32 转换为 down_input
+        // 如果块大小可以支持按块移动
         if (config_.stride % ggml_blck_size(ggml_internal_get_type_traits(config_.down_type).vec_dot_type) == 0) {
+            // 本块的计算结果地址
             float* intermediate_fp32_ptr = s_intermediate_fp32_[expert_idx] + ith * config_.stride;
+            // 对应在down_input中的存放位置
             void* down_input_ptr = s_down_input_[expert_idx] + ith * config_.stride * ggml_type_size(ggml_internal_get_type_traits(config_.down_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.down_type).vec_dot_type);
+            // 转换为对应数据类型并存放到对应位置
             from_float(intermediate_fp32_ptr, down_input_ptr, config_.stride, ggml_internal_get_type_traits(config_.down_type).vec_dot_type);
         }
     }, nullptr);
 
+    // 块大小不支持按块移动，则以expert为单位移动
     if (config_.stride % ggml_blck_size(ggml_internal_get_type_traits(config_.down_type).vec_dot_type) != 0) {
         for (int i = 0; i < k; i++) {
             from_float(s_intermediate_fp32_[i], s_down_input_[i], config_.intermediate_size, ggml_internal_get_type_traits(config_.down_type).vec_dot_type);
         }
     }
 
-    nth = config_.hidden_size / config_.stride;
+    // compute down, original shape [2048, 7168, 256] -> np.dims [256, 7168, 1152] Q4_k
+    // config_.intermediate_size2048 * ggml_type_size(config_.down_type)144 / ggml_blck_size(config_.down_type)256 = 1152
+    nth = config_.hidden_size / config_.stride; // nth = 7168/64 = 112
     backend->do_work_stealing_job(nth, nullptr, [&](int task_id) {
         int ith = task_id;
         for (int i = ith * config_.stride; i < (ith + 1) * config_.stride; i++) {
@@ -215,50 +264,94 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights, c
         for (int expert_idx = 0; expert_idx < k; expert_idx++) {
             uint64_t expert_id = expert_ids[expert_idx];
 
+            if (in_gpu_mask != nullptr) {
+                // Use uint64_t for in_gpu_mask to match expert_ids
+                // This assumes in_gpu_mask is a 1D array where each entry corresponds to an expert_id
+                // If the expert_id is in GPU, skip the computation
+                // Note: Ensure that in_gpu_mask is properly initialized and passed
+                if (in_gpu_mask[expert_id]) continue;
+            }
+
             #ifdef USE_NUMA
             void* down_proj_ptr = (uint8_t*)down_proj_numa_[Backend::numa_node] + (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
             #else
+            // 定位到expert_id的down_proj_的第ith块的起始位置
             void* down_proj_ptr = (uint8_t*)down_proj_ + (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
             #endif
             
+            // 获取到该块在本次也就是down@input输出中的位置, 计算的结果输出到该指针指向的s_down_output_的对应位置
             float* down_output_ptr = s_down_output_[expert_idx] + ith * config_.stride;
             llamafile_sgemm(config_.stride, 1, config_.intermediate_size / ggml_blck_size(config_.down_type), down_proj_ptr, config_.intermediate_size / ggml_blck_size(config_.down_type), s_down_input_[expert_idx], config_.intermediate_size / ggml_blck_size(config_.down_type), down_output_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.down_type, ggml_internal_get_type_traits(config_.down_type).vec_dot_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
+            
+            // 为本块的结果进行加权
             for (int i = ith * config_.stride; i < (ith + 1) * config_.stride; i++) {
                 s_output_fp32_[i] += s_down_output_[expert_idx][i] * weights[expert_idx];
             }
         }
+        // printf("====================in forward_one() after down====================\n");
+        // 将本块的输出写到最终输出中，如果块大小允许
         if (config_.stride % ggml_blck_size(config_.hidden_type) == 0) {
+            // printf("====================in forward_one() after down1====================\n");
             float* output_fp32_ptr = s_output_fp32_ + ith * config_.stride;
+            // printf("====================in forward_one() after down2====================\n");
             void* output_ptr = (uint8_t*)output + ith * config_.stride * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type);
+            // printf("====================in forward_one() after down3====================\n");
             from_float(output_fp32_ptr, output_ptr, config_.stride, config_.hidden_type);
+            // printf("====================in forward_one() after down4====================\n");
         }
+        // printf("====================in forward_one() after down5====================\n");
     }, nullptr);
 
+    // 如果块大小不允许按块移动，则以expert为单位移动
+    // printf("====================in forward_one() after down6====================\n");
     if (config_.stride % ggml_blck_size(config_.hidden_type) != 0) {
+        // printf("====================in forward_one() after down7====================\n");
         from_float(s_output_fp32_, output, config_.hidden_size, config_.hidden_type);
+        // printf("====================in forward_one() after down8====================\n");
     }
+    // printf("====================in forward_one() after down9====================\n");
 }
 
-void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, Backend* backend) {
+/**
+forward_many总结：
+并行逻辑与forward_one相同，不同点在于：
+1. forward_one只处理一个token，因此每个矩阵乘法的输入大小都为[1, hidden_size]，
+    而forward_many处理多个token，因此每个矩阵乘法的输入大小为[number of tokens, hidden_size]，这里的number of tokens为该expert需要处理的token数量
+2. forward_one的stride=64，也就是每个矩阵切分为2048/64=32块，而forward_many的stride=256，也就是每个矩阵切分为2048/256=8块，每个线程处理的数据量更大
+ */
+
+// 计算多个token，>10时
+void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, 
+    const uint64_t* in_gpu_mask, 
+    const void* input, void* output, Backend* backend) {
+    // 统计每个expert的处理的token数量， 所有256个都统计，而不是只统计在expert_ids中的
     for (int i = 0; i < config_.expert_num; i++) {
         m_local_num_[i] = 0;
     }
+    // m_local_pos_: shape[qlen, k] same with expert_ids, 每个token在每个expert计算中的位置，即该token[i]是在该expert[j]计算中的第几个token
     for (int i = 0; i < qlen; i++) {
         for (int j = 0; j < k; j++) {
             m_local_pos_[i][j] = m_local_num_[expert_ids[i * k + j]]++;
         }
     }
+
+    // 计算每个expert的在分配的内存中的地址，offset为每个expert处理多少个token
     uint64_t offset = 0;
     for (int i = 0; i < config_.expert_num; i++) {
+        // 所有expert与gate和up计算的输入输出
         m_local_gate_input_ptr_[i] = m_local_gate_input_ + offset * config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type);
         m_local_up_input_ptr_[i] = m_local_up_input_ + offset * config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type);
         m_local_gate_output_ptr_[i] = m_local_gate_output_ + offset * config_.intermediate_size;
         m_local_up_output_ptr_[i] = m_local_up_output_ + offset * config_.intermediate_size;
+        // 临时存储fp32格式的输出
         m_local_intermediate_fp32_ptr_[i] = m_local_intermediate_fp32_ + offset * config_.intermediate_size;
+        // 所有expert与down计算的输入输出
         m_local_down_input_ptr_[i] = m_local_down_input_ + offset * config_.intermediate_size * ggml_type_size(ggml_internal_get_type_traits(config_.down_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.down_type).vec_dot_type);
         m_local_down_output_ptr_[i] = m_local_down_output_ + offset * config_.hidden_size;
         offset += m_local_num_[i];
     }
+
+    // 将 token i 的 input(hidden_state) 分发到每个token-i激活的expert的 gate_input 和 up_input 中
     backend->do_work_stealing_job(qlen, nullptr, [&](int i) {
         const void* gate_input_ptr;
         const void* up_input_ptr;
@@ -284,21 +377,40 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
                 }
             }
         }
+        // 将 token i 的 input(hidden_state) 分发到每个token-i激活的expert的 gate_input 和 up_input 中
         for (int j = 0; j < k; j++) {
-            memcpy(m_local_gate_input_ptr_[expert_ids[i * k + j]] + m_local_pos_[i][j] * config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type), gate_input_ptr, config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type));
-            memcpy(m_local_up_input_ptr_[expert_ids[i * k + j]] + m_local_pos_[i][j] * config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type), up_input_ptr, config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type));
+            memcpy(m_local_gate_input_ptr_[expert_ids[i * k + j]] + m_local_pos_[i][j] * config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type),
+                gate_input_ptr, 
+                config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.gate_type).vec_dot_type));
+            memcpy(m_local_up_input_ptr_[expert_ids[i * k + j]] + m_local_pos_[i][j] * config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type), 
+                up_input_ptr, 
+                config_.hidden_size * ggml_type_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type) / ggml_blck_size(ggml_internal_get_type_traits(config_.up_type).vec_dot_type));
         }
     }, nullptr);
-    int stride = QK_K;
-    int nth = config_.intermediate_size / stride;
+
+    int stride = QK_K; // ggml-quants -> ggml-common = 256
+    int nth = config_.intermediate_size / stride; // 2048/256 = 8, 8*256 = 2048 tasks
+    // 计算 gate @ input 和 up @ input， 将gate和up矩阵按列切块即2048/256=8块，每块为[7168,256], 
+    // 每个expert由8个线程处理，每个处理[B, 7168]@[7168, 256] -> [B, 256],最后拼接
     backend->do_work_stealing_job(nth * config_.expert_num, nullptr, [&](int task_id) {
-        uint64_t expert_idx = task_id / nth;
-        int ith = task_id % nth;
+        uint64_t expert_idx = task_id / nth; // 第几个expert
+        int ith = task_id % nth;// 该expert的第ith块
         void* gate_input_ptr = m_local_gate_input_ptr_[expert_idx];
+        // printf("====================in forward_many() gate and up before gpu mask====================\n");
+        if(in_gpu_mask != nullptr) {
+            // Use uint64_t for in_gpu_mask to match expert_ids
+            // This assumes in_gpu_mask is a 1D array where each entry corresponds to an expert_id
+            // If the expert_id is in GPU, skip the computation
+            // Note: Ensure that in_gpu_mask is properly initialized and passed
+            // printf("====================in forward_many() ====================\n");
+            // std::cout << "expert_idx: " << expert_idx << ", in_gpu_mask[expert_idx]: " << in_gpu_mask[expert_idx] << std::endl;
+            if (in_gpu_mask[expert_idx]) return;
+        }
 
         #ifdef USE_NUMA
         void* gate_proj_ptr = (uint8_t*)gate_proj_numa_[Backend::numa_node] + (expert_idx * config_.intermediate_size + ith * stride) * config_.hidden_size * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
         #else
+        // 由于
         void* gate_proj_ptr = (uint8_t*)gate_proj_ + (expert_idx * config_.intermediate_size + ith * stride) * config_.hidden_size * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
         #endif
 
@@ -323,12 +435,23 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
             from_float(intermediate_fp32_ptr, down_input_ptr, stride, ggml_internal_get_type_traits(config_.down_type).vec_dot_type);
         }
     }, nullptr);
+
     stride = QK_K;
     nth = config_.hidden_size / stride;
+    // 计算 down_input @ down_proj
     backend->do_work_stealing_job(nth * config_.expert_num, nullptr, [&](int task_id) {
         uint64_t expert_idx = task_id / nth;
         int ith = task_id % nth;
         void* down_input_ptr = m_local_down_input_ptr_[expert_idx];
+        // printf("====================in forward_many() down before gpu mask====================\n");
+        if(in_gpu_mask != nullptr) {
+            // Use uint64_t for in_gpu_mask to match expert_ids
+            // This assumes in_gpu_mask is a 1D array where each entry corresponds to an expert_id
+            // If the expert_id is in GPU, skip the computation
+            // Note: Ensure that in_gpu_mask is properly initialized and passed
+            // std::cout << "expert_idx: " << expert_idx << ", in_gpu_mask[expert_idx]: " << in_gpu_mask[expert_idx] << std::endl;
+            if (in_gpu_mask[expert_idx]) return;
+        }
         
         #ifdef USE_NUMA
         void* down_proj_ptr = (uint8_t*)down_proj_numa_[Backend::numa_node] + (expert_idx * config_.hidden_size + ith * stride) * config_.intermediate_size * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
@@ -339,6 +462,8 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
         float* down_output_ptr = m_local_down_output_ptr_[expert_idx] + ith * stride;
         llamafile_sgemm(stride, m_local_num_[expert_idx], config_.intermediate_size / ggml_blck_size(config_.down_type), down_proj_ptr, config_.intermediate_size / ggml_blck_size(config_.down_type), down_input_ptr, config_.intermediate_size / ggml_blck_size(config_.down_type), down_output_ptr, config_.hidden_size, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.down_type, ggml_internal_get_type_traits(config_.down_type).vec_dot_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
     }, nullptr);
+
+    // 计算 output = down_output * weights
     backend->do_work_stealing_job(qlen, nullptr, [&](int i) {
         for (int e = 0; e < config_.hidden_size; e++) {
             m_output_fp32_[i][e] = 0;
@@ -352,49 +477,37 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
     }, nullptr);
 }
 
-void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weights, const void* input, void* output, int* batch_size_tensor, Backend* backend) {
-    qlen = batch_size_tensor[0];
+void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weights,
+     const uint64_t* in_gpu_mask, 
+     const void* input, void* output, int* batch_size_tensor, Backend* backend) {
+    qlen = batch_size_tensor[0]; // qlen = batch_size * seq_len
     if (qlen < config_.group_min_len) {
         for (int i = 0; i < qlen; i++) {
-            forward_one(k, expert_ids + i * k, weights + i * k, (uint8_t*)input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), backend);
-        }
-        return;
-    }
-    int forward_len = std::min(config_.group_max_len, qlen);
-    forward_many(forward_len, k, expert_ids, weights, input, output, backend);
-
-    batch_size_tensor[0] -= forward_len;
-    forward(qlen - forward_len, k, expert_ids + forward_len * k, weights + forward_len * k, (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), batch_size_tensor, backend);
-}
-
-void MOE::forward_with_cache(int qlen, int k, int layer_id, const uint64_t* cached_experts, const uint64_t* predicted_experts, const uint64_t* expert_ids, const float* weights, const void* input, void* output, int* batch_size_tensor, Backend* backend) {
-    /**
-    1. compute expert in cpu & compute expert cached in GPU asynchronously
-    2. update cached experts */
-    
-    
-    qlen = batch_size_tensor[0];
-    if (qlen != 1) {
-        std::cerr << "MOE::forward_with_cache only support qlen == 1, but got " << qlen << std::endl;
-        abort();
-    }
-
-    
-
-    if (qlen < config_.group_min_len) {
-        for (int i = 0; i < qlen; i++) {
+            // printf("====================moe.forward() before forward_one()====================\n");
             forward_one(k, 
                 expert_ids + i * k, 
                 weights + i * k, 
+                in_gpu_mask, 
                 (uint8_t*)input + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), 
-                (uint8_t*)output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), 
-                backend);
+                (uint8_t*)output + i * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type),
+                 backend);
         }
+        // printf("====================moe.forward() after forward_one()====================\n");
         return;
     }
-    // int forward_len = std::min(config_.group_max_len, qlen);
-    // forward_many(forward_len, k, expert_ids, weights, input, output, backend);
+    int forward_len = std::min(config_.group_max_len, qlen);// 10 or qlen
+    // printf("====================moe.forward() before forward_many()====================\n");
+    forward_many(forward_len, k, expert_ids, weights, in_gpu_mask, input, output, backend);
+    // printf("====================moe.forward() after forward_many()====================\n");
 
-    // batch_size_tensor[0] -= forward_len;
-    // forward(qlen - forward_len, k, expert_ids + forward_len * k, weights + forward_len * k, (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), batch_size_tensor, backend);
+    batch_size_tensor[0] -= forward_len;
+    forward(qlen - forward_len, 
+        k, 
+        expert_ids + forward_len * k, 
+        weights + forward_len * k, 
+        in_gpu_mask,
+        (uint8_t*)input + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), 
+        (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), 
+        batch_size_tensor, 
+        backend);
 }

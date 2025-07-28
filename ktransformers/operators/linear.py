@@ -84,7 +84,7 @@ class KLinearBase(ABC):
             keys = override_key
         else:
             keys = [self.key]
-
+        print(f"=^^^^^^^^^^^^^^^^^^^{keys}, {self.key}")
         for key in keys:
             if isinstance(self.gguf_loader, SafeTensorLoader):
                 # using safetensor_loader
@@ -607,7 +607,9 @@ class KLinearMarlin(KLinearBase):
         
         #if self.in_features * self.out_features:
         if w is None: 
-            w = self.load_weight(device=device) 
+            w = self.load_weight(device=device)
+            print(f"w.shape = {w.shape}") 
+            print(f"w.dtype = {w.dtype}")
 
         if isinstance(w, nn.Parameter):
             # pad weight
@@ -621,9 +623,9 @@ class KLinearMarlin(KLinearBase):
             self.has_bias = True
         else:
             raise ValueError("Invalid weight type")
-        weight = weight.to(device)
+        weight = weight.to(device, non_blocking=True)
         if self.has_bias:
-            self.bias = self.bias.to(device)
+            self.bias = self.bias.to(device, non_blocking=True)
             
         if self.padding:
             padded_weight = torch.zeros(self.in_features, self.out_features, device=self.device)
@@ -690,6 +692,73 @@ class KLinearMarlin(KLinearBase):
         self.g_idx = None
         self.sort_indices = None
         self.workspace = None
+
+class SLinear(nn.Module):
+    # self.hidden_size, self.moe_intermediate_size, gguf_loader, config, device=self.gpu_device
+    def __init__(
+        self,
+        hidden_size,
+        intermediate_size,
+        gguf_loader,
+        config,
+        # ggml_type,
+        target_dtype,
+        linear_type,
+        device="cuda"
+    ):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.intermediate_size = intermediate_size
+        self.gguf_loader = gguf_loader
+        self.config = config
+        self.linear_type = linear_type
+
+        self.target_dtype = target_dtype
+        self.device = device
+
+        # 存储量化后的参数tensor
+        self.parameter_quantized = None
+        # self.ggml_type = ggml_type
+
+        return
+
+    # 将参数(量化后)加载入SLinear
+    def load(self, parameter_tensor: torch.tensor):
+        # assert self.device == parameter_tensor.device, f"self.device is: {self.device}, but parameter_tensor is in {parameter_tensor.device}"
+        # assert parameter_tensor.shape == (self.hidden_size, self.intermediate_size), f"Expected shape ({self.hidden_size}, {self.intermediate_size}), but got {parameter_tensor.shape}"
+
+        self.parameter_quantized = parameter_tensor
+        return
+    
+    # up_gpu[i], requires_grad=False, device=self.gpu_device)
+    @nvtx.annotate("SLinear.forward")
+    def forward(self, x: torch.Tensor, ggml_type, data_stream=None) -> torch.Tensor:
+        # 1) 解量化
+        parameter_dequantized = self.gguf_loader.dequantize_expert(self.parameter_quantized, ggml_type)
+        # 解量化后统一需要先转换为目标数据类型，然后view为转置后的形状（out, in) 然后转置为（in， out）
+        # up & gate: (out = intermediate_size, in = hidden_size)
+        # down: (out = hidden_size, in = intermediate_size)
+
+        parameter_dequantized = parameter_dequantized.to(dtype = self.target_dtype)
+        if self.linear_type == "up" or self.linear_type == "gate":
+            parameter_dequantized = parameter_dequantized.view(self.intermediate_size, self.hidden_size)
+        elif self.linear_type == "down":
+            parameter_dequantized = parameter_dequantized.view(self.hidden_size, self.intermediate_size)
+        else:
+            raise ValueError(f"Invalid linear_type: {self.linear_type}, expected 'up', 'gate' or 'down'")
+        
+        parameter_dequantized = parameter_dequantized.transpose(0, 1).contiguous()
+    
+        # 2) 执行不同的forward计算
+        output = x @ parameter_dequantized
+
+        # 解量化后即释放
+        del parameter_dequantized
+        return output
+        
+
+    def unload(self):
+        self.parameter_quantized = None
 
 class KLinearCPUInfer(KLinearBase):
     CPU_INFER = None
