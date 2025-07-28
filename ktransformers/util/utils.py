@@ -244,9 +244,10 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                         cache_position=cache_position,
                         past_key_values=past_key_values,
                         return_dict=False, use_cache=True,
-                        prompt_name = prompt_name,
-                        mode = "decode",
-                        token_idx = token_idx)[0]
+                        # prompt_name = prompt_name,
+                        # mode = "decode",
+                        # token_idx = token_idx
+                        )[0]
         if past_key_values != None and isinstance(past_key_values, StaticCache):
             past_key_values.change_seq_length(1)
         sync_all_device(all_cuda_device)
