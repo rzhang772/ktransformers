@@ -355,6 +355,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         cuda_graph_runner = None
             
         start_time = time.time()
+        use_cuda_graph = False
         for i in range(1, max_new_tokens):
             if use_flashinfer_mla:
                 MLAWrapperSingleton.plan_all(None,None,None,position_ids.squeeze(1)+1,None,

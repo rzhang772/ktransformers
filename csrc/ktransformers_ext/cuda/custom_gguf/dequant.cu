@@ -724,6 +724,36 @@ torch::Tensor dequantize_q6_k(const int8_t* data, const int num_bytes, const int
     cudaDeviceSynchronize();
     return output;
 }
+torch::Tensor dequantize_q6_k_ongpu(const torch::Tensor& data_gpu, const int num_bytes, const int blk_size, const int ele_per_blk, const torch::Device device, const torch::Dtype target_dtype) {
+    // data.numel%blk_size should be 0, else raise err
+
+    TORCH_CHECK(data_gpu.device().is_cuda(), "Input tensor must be on CUDA device.");
+    TORCH_CHECK(data_gpu.dtype() == torch::kInt8, "Input tensor must be int8.");
+    TORCH_CHECK(data_gpu.numel() % blk_size == 0, "Input tensor size must be divisible by blk_size.");
+
+    int num_blocks = num_bytes / blk_size;
+    const at::cuda::OptionalCUDAGuard device_guard(device);
+
+    // Create output tensor
+    auto output = torch::zeros({num_blocks, 256}, torch::dtype(target_dtype).device(device));
+
+    switch (target_dtype) {
+        case torch::kFloat16:
+            dequantize_q6_k_fp16_kernel<<<512, 256>>>(data_gpu.data_ptr<int8_t>(), (__half*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
+            break;
+        case torch::kBFloat16:
+            dequantize_q6_k_bf16_kernel<<<512, 256>>>(data_gpu.data_ptr<int8_t>(), (nv_bfloat16*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
+            break;
+        case torch::kFloat32:
+            dequantize_q6_k_fp32_kernel<<<512, 256>>>(data_gpu.data_ptr<int8_t>(), output.data_ptr<float>(), blk_size, ele_per_blk, num_blocks);
+            break;
+        default:
+            printf("target type not support\n");
+            exit(0);
+    }
+    // cudaDeviceSynchronize();
+    return output;
+}
 
 torch::Tensor dequantize_q5_k(const int8_t* data, const int num_bytes, const int blk_size, const int ele_per_blk, const torch::Device device, const torch::Dtype target_dtype) {
     int num_blocks = num_bytes / blk_size;
@@ -785,6 +815,37 @@ torch::Tensor dequantize_q4_k(const int8_t* data, const int num_bytes, const int
             exit(0);
     }
     cudaDeviceSynchronize();
+    return output;
+}
+
+torch::Tensor dequantize_q4_k_ongpu(const torch::Tensor& data_gpu, const int num_bytes, const int blk_size, const int ele_per_blk, const torch::Device device, const torch::Dtype target_dtype) {
+    // data.numel%blk_size should be 0, else raise err
+
+    TORCH_CHECK(data_gpu.device().is_cuda(), "Input tensor must be on CUDA device.");
+    TORCH_CHECK(data_gpu.dtype() == torch::kInt8, "Input tensor must be int8.");
+    TORCH_CHECK(data_gpu.numel() % blk_size == 0, "Input tensor size must be divisible by blk_size.");
+
+    int num_blocks = num_bytes / blk_size;
+    const at::cuda::OptionalCUDAGuard device_guard(device);
+
+    // Create output tensor
+    auto output = torch::zeros({num_blocks, 256}, torch::dtype(target_dtype).device(device));
+
+    switch (target_dtype) {
+        case torch::kFloat16:
+            dequantize_q4_k_fp16_kernel<<<512, 256>>>(data_gpu.data_ptr<int8_t>(), (__half*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
+            break;
+        case torch::kBFloat16:
+            dequantize_q4_k_bf16_kernel<<<512, 256>>>(data_gpu.data_ptr<int8_t>(), (nv_bfloat16*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
+            break;
+        case torch::kFloat32:
+            dequantize_q4_k_fp32_kernel<<<512, 256>>>(data_gpu.data_ptr<int8_t>(), output.data_ptr<float>(), blk_size, ele_per_blk, num_blocks);
+            break;
+        default:
+            printf("target type not support\n");
+            exit(0);
+    }
+    // cudaDeviceSynchronize();
     return output;
 }
 

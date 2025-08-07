@@ -1,6 +1,7 @@
 import struct
 import warnings
 import numpy as np
+import nvtx
 import re
 import numpy.typing as npt
 from typing import Sequence
@@ -433,13 +434,15 @@ class GGUFLoader(ModelLoader):
         offset = expert_id * block_size * blocks_per_experts
         data = data[offset: offset + block_size * blocks_per_experts]
         return torch.from_numpy(data)
-
+    
+    @nvtx.annotate("dequantize_expert")
     def dequantize_expert(self, expert_tensor, ggml_type, target_dtype = torch.get_default_dtype(), device = "cuda"):
+        # print(f"target_dtype: {target_dtype}, device: {device}")
         if ggml_type not in GGML_NAMES:
             raise NotImplementedError(f"ggml_type {ggml_type} not implemented")
         ggml_name = GGML_NAMES[ggml_type]
         if "cuda" in device.lower():
-            values = GGML_DEQUANTIZE_GPU[ggml_name](expert_tensor, device, target_dtype)
+            values = GGML_DEQUANTIZE_GPU_ONGPU[ggml_name](expert_tensor, device, target_dtype)
         else:
             values = GGML_DEQUANTIZE[ggml_name](expert_tensor)
             values = torch.from_numpy(values.copy())

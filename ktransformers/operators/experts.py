@@ -160,7 +160,7 @@ class KExpertsCPU(KExpertsBase):
         **kwargs
     ):
         super().__init__(key, gguf_loader, config, orig_module, device, **kwargs)
-        print(f"=================>>>>. {self.key}: KExpertsCPU initialized, {[self.key]}")
+        # print(f"=================>>>>. {self.key}: KExpertsCPU initialized, {[self.key]}")
         assert device.lower() == "cpu", "KExpertsCPU can only be loaded on CPU"
         self.n_routed_experts = n_routed_experts
         self.out_device = out_device # 也就是generate_device, 这个参数是为了支持在cpu上运行的模型，输出tensor会被放到out_device上, 这里是cuda
@@ -191,8 +191,9 @@ class KExpertsCPU(KExpertsBase):
         KExpertsCPU.layer_counter += 1
 
         self.predictor_path = f"/mnt/incontainer/shared_rui/predictors/top8_alldataset_smallMLP_B32/layer_{self.layer_id}/best_model_layer_{self.layer_id}.pth"
-        self.predictor = TopkPredictor(input_dim=7168, expert_num=256)
-        self.predictor.load_state_dict(torch.load(self.predictor_path))
+        self.predictor = TopkPredictor(input_dim=7168, expert_num=256).to_empty(device=self.gpu_device)
+        self.predictor.load_state_dict(torch.load(self.predictor_path, map_location=self.gpu_device))
+
         self.act_fn = ACT2FN[config.hidden_act]
 
 
@@ -206,10 +207,10 @@ class KExpertsCPU(KExpertsBase):
         self.gate_type = w["gate_type"]
         self.up_type = w["up_type"]
         self.down_type = w["down_type"]
-        print(f"{w['gate'].shape}, {w['up'].shape}, {w['down'].shape}")
-        print(f"types: {self.gate_type}, {self.up_type}, {self.down_type}")
-        print(f"{self.key}")
-        print(f"******************up:{self.up.shape}")
+        # print(f"{w['gate'].shape}, {w['up'].shape}, {w['down'].shape}")
+        # print(f"types: {self.gate_type}, {self.up_type}, {self.down_type}")
+        # print(f"{self.key}")
+        # print(f"******************up:{self.up.shape}")
         gate_ptr = ctypes.addressof(
             ctypes.cast(self.gate.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents
         )
@@ -219,10 +220,11 @@ class KExpertsCPU(KExpertsBase):
         down_ptr = ctypes.addressof(
             ctypes.cast(self.down.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents
         )
-        print(f"{w['gate'].shape}, {w['up'].shape}, {w['down'].shape}")
+        # print(f"{w['gate'].shape}, {w['up'].shape}, {w['down'].shape}")
         # SMOE: expert cache load parameters
         for i in range(self.cached_experts_num):
             up = self.gguf_loader.load_ggml_expert_from_weights(self.up, i, self.elements_per_expert, self.up_type)
+            # print(f"up dtype: {up.dtype}")
             up = up.to(self.gpu_device)
             gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, i, self.elements_per_expert, self.gate_type)
             gate = gate.to(self.gpu_device)
@@ -234,6 +236,7 @@ class KExpertsCPU(KExpertsBase):
             self.cached_experts["down_projs"][i].load(down)
         self.cached_experts_ids = torch.arange(0, 8, device=self.gpu_device, dtype=torch.long)
         self.prefetch_event.record()
+        
         print(f"==++++++++++++>>>>. {self.key}: Expert cache initialized")
 
 
@@ -436,8 +439,8 @@ class KExpertsCPU(KExpertsBase):
             return KExpertsCPU.output_gpu_map[self.out_device].view(1, -1)
         else:
             if mode == "decode":
-                print(f"decode layer {self.layer_id}")
-                print(f"expert_ids: {expert_ids}, weights: {weights}")
+                # print(f"decode layer {self.layer_id}")
+                # print(f"expert_ids: {expert_ids}, weights: {weights}")
                 # in_gpu_mask: multihot mask from cached_expert_ids, type: list, shape:(n_routed_experts,)
                 in_gpu_mask = torch.zeros(self.n_routed_experts, dtype=torch.int64, device=self.cpu_device)
                 # for i in range(self.cached_experts_num):
@@ -474,10 +477,11 @@ class KExpertsCPU(KExpertsBase):
                 
                 # shared_expert output GPU
                 y_ = shared_experts(identity) # shape [batch_size, sequence_length, hidden_dim]
+                # print(f"y_.shape: {y_.shape}, y_.dtype: {y_.dtype}")
 
                 # prefetch check
-                if not self.prefetch_event.query():
-                    torch.cuda.current_stream().wait_event(self.prefetch_event)
+                # if not self.prefetch_event.query():
+                #     torch.cuda.current_stream().wait_event(self.prefetch_event)
                 
 
                 # gpu expert output
@@ -487,11 +491,12 @@ class KExpertsCPU(KExpertsBase):
                 # sync cpu and gpu
                 self.cpu_infer.sync()
                 output = output.to(device=object.__getattribute__(self, "out_device")).view(identity.shape)
+                # print(f"output.type: {output.dtype}, output.shape: {output.shape}")
 
                 # prefetch next experts in independent prefetch stream
                 # reset prefetch event
-                self.prefetch_event = torch.cuda.Event(blocking=False)
-                self.prefetch_experts(identity, expert_ids)
+                # self.prefetch_event = torch.cuda.Event(blocking=False)
+                # self.prefetch_experts(identity, expert_ids)
 
                 # get final output
                 output += y_
@@ -552,10 +557,10 @@ class KExpertsCPU(KExpertsBase):
         weights = weights.to(self.gpu_device)  # 确保weights在GPU上
 
         # 初始化加权输出
-        weighted_output = torch.zeros_like(input_tensor, device=self.gpu_device) 
+        weighted_output = torch.zeros_like(input_tensor, device=self.gpu_device, dtype=input_tensor.dtype)  # [batch_size, sequence_length, hidden_dim]
 
         # 找出需要处理的专家中哪些已缓存到 GPU 上
-        unique_expert_ids = torch.unique(expert_ids)  # [num_experts_per_tok]
+        unique_expert_ids = torch.unique(expert_ids)
         gpu_compute_expert_ids = unique_expert_ids[torch.isin(unique_expert_ids, self.cached_experts_ids)]
 
         for expert_id in gpu_compute_expert_ids:
@@ -571,24 +576,29 @@ class KExpertsCPU(KExpertsBase):
             selected_inputs = input_tensor[idx_b, :, :] 
 
             # 找到 cached_experts 中对应位置
-            local_idx = (self.cached_experts_ids == expert_id).nonzero(as_tuple=True)[0].item()
+            local_idx = (self.cached_experts_ids == expert_id).nonzero(as_tuple=True)[0]
             gate_proj = self.cached_experts["gate_projs"][local_idx]
             up_proj = self.cached_experts["up_projs"][local_idx]
             down_proj = self.cached_experts["down_projs"][local_idx]
 
             # 计算 expert_compute_output
+            # print(self.gate_type)
             gated = gate_proj(selected_inputs, self.gate_type)              # [N, sequence_length, hidden_dim]
             upped = up_proj(selected_inputs, self.up_type)               # [N, sequence_length, hidden_dim]
             activated = self.act_fn(gated) * upped         # [N, sequence_length, hidden_dim]
             downed = down_proj(activated, self.down_type)                  # [N, sequence_length, hidden_dim]
+            # print(f"gated type: {gated.dtype}, upped type: {upped.dtype}, downed type: {downed.dtype}")
+            # print(f"weights type: {selected_weights.dtype}, input type: {selected_inputs.dtype}")
 
             # 权重加权
             downed_weighted = downed * selected_weights    # [N, sequence_length, hidden_dim]
+            downed_weighted = downed_weighted.to(input_tensor.dtype)  # 确保类型一致
+            # print(f"down weight type: {downed_weighted.dtype}, output type: {weighted_output.dtype}")
 
             # Scatter Add 回到 weighted_output 对应位置
             weighted_output.index_add_(0, idx_b, downed_weighted)
 
-        return weighted_output.to(self.out_device)
+        return weighted_output
         
 
     @nvtx.annotate("KExpertsCPU.prefetch_experts")
@@ -612,7 +622,7 @@ class KExpertsCPU(KExpertsBase):
         # 将expert_ids转换为multihot编码 (B, E) -> (B, 256)
         expert_mask = batch_multihot_encode(expert_ids).to(self.gpu_device)  # shape [batch_size, expert_num]
         with torch.cuda.stream(self.prefetch_stream):
-            predicted_experts, probs = self.predictor.predict(input_tensor, expert_ids)
+            predicted_experts, probs = self.predictor.predict(input_tensor.reshape(-1, input_tensor.shape[2]), expert_mask=expert_mask)
             predicted_flat = predicted_experts.flatten()
 
             # 1) 统计出现频次
@@ -644,11 +654,11 @@ class KExpertsCPU(KExpertsBase):
                     self.cached_experts["down_projs"][idx].unload()
 
                     up = self.gguf_loader.load_ggml_expert_from_weights(self.up, new_id, self.elements_per_expert, self.up_type)
-                    up = up.to(self.gpu_device)
+                    up = up.to(self.gpu_device, non_blocking=True)
                     gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, new_id, self.elements_per_expert, self.gate_type)
-                    gate = gate.to(self.gpu_device)
+                    gate = gate.to(self.gpu_device, non_blocking=True)
                     down = self.gguf_loader.load_ggml_expert_from_weights(self.down, new_id, self.elements_per_expert, self.down_type)
-                    down = down.to(self.gpu_device)
+                    down = down.to(self.gpu_device, non_blocking=True)
 
                     self.cached_experts["up_projs"][idx].load(up)
                     self.cached_experts["gate_projs"][idx].load(gate)

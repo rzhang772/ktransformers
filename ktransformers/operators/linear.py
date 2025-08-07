@@ -14,6 +14,7 @@ Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
 import ctypes
 import nvtx
 import torch
+import torch.nn.functional as F
 from torch import Tensor, nn
 if not torch.xpu.is_available():
     import KTransformersOps
@@ -697,18 +698,22 @@ class SLinear(nn.Module):
     # self.hidden_size, self.moe_intermediate_size, gguf_loader, config, device=self.gpu_device
     def __init__(
         self,
-        hidden_size,
-        intermediate_size,
+        in_features,
+        out_features,
         gguf_loader,
         config,
         # ggml_type,
         target_dtype,
         linear_type,
-        device="cuda"
+        device="cuda",
+        num_bits: int = 4,  # 4-bit/8-bit is supported
+        group_size: int = 64,  # -1, 32, 64, 128
+        act_order: bool = False,
+        is_k_full=True,
     ):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
+        self.in_features = in_features
+        self.out_features = out_features
         self.gguf_loader = gguf_loader
         self.config = config
         self.linear_type = linear_type
@@ -720,7 +725,22 @@ class SLinear(nn.Module):
         self.parameter_quantized = None
         # self.ggml_type = ggml_type
 
-        return
+        self.num_bits = num_bits
+        self.group_size = group_size
+        self.act_order = act_order
+        self.is_k_full = is_k_full
+        self.padding = False
+        self.orin_in_features = self.in_features
+        self.orin_out_features = self.out_features
+        if self.in_features%GPTQ_MARLIN_MIN_THREAD_K!=0 or self.out_features%GPTQ_MARLIN_MIN_THREAD_K!=0:
+            #print(f"warning!, in_features={in_features} or out_features={out_features} is undivisible by GPTQ_MARLIN_MIN_THREAD_K={GPTQ_MARLIN_MIN_THREAD_K} and GPTQ_MARLIN_MIN_THREAD_N={GPTQ_MARLIN_MIN_THREAD_N}, padding")
+            self.padding = True
+            self.in_features = (self.in_features+GPTQ_MARLIN_MIN_THREAD_K-1)//GPTQ_MARLIN_MIN_THREAD_K*GPTQ_MARLIN_MIN_THREAD_K
+            self.out_features = (self.out_features+GPTQ_MARLIN_MIN_THREAD_N-1)//GPTQ_MARLIN_MIN_THREAD_N*GPTQ_MARLIN_MIN_THREAD_N
+            #print(f"After padding: in_features={in_features}, out_features={out_features}")
+        
+        self.k = self.in_features
+        self.n = self.out_features
 
     # 将参数(量化后)加载入SLinear
     def load(self, parameter_tensor: torch.tensor):
@@ -733,28 +753,75 @@ class SLinear(nn.Module):
     # up_gpu[i], requires_grad=False, device=self.gpu_device)
     @nvtx.annotate("SLinear.forward")
     def forward(self, x: torch.Tensor, ggml_type, data_stream=None) -> torch.Tensor:
+        # x: (batch_size, hidden_size)
         # 1) 解量化
-        parameter_dequantized = self.gguf_loader.dequantize_expert(self.parameter_quantized, ggml_type)
+        # print(f"parameter_quantized dtype: {self.parameter_quantized.dtype}, shape: {self.parameter_quantized.shape}")
+        parameter_dequantized = self.gguf_loader.dequantize_expert(self.parameter_quantized, ggml_type, target_dtype=self.target_dtype)
         # 解量化后统一需要先转换为目标数据类型，然后view为转置后的形状（out, in) 然后转置为（in， out）
         # up & gate: (out = intermediate_size, in = hidden_size)
         # down: (out = hidden_size, in = intermediate_size)
+        # print(f"slinear target dtype: {self.target_dtype}")
+
 
         parameter_dequantized = parameter_dequantized.to(dtype = self.target_dtype)
-        if self.linear_type == "up" or self.linear_type == "gate":
-            parameter_dequantized = parameter_dequantized.view(self.intermediate_size, self.hidden_size)
-        elif self.linear_type == "down":
-            parameter_dequantized = parameter_dequantized.view(self.hidden_size, self.intermediate_size)
-        else:
-            raise ValueError(f"Invalid linear_type: {self.linear_type}, expected 'up', 'gate' or 'down'")
-        
-        parameter_dequantized = parameter_dequantized.transpose(0, 1).contiguous()
-    
-        # 2) 执行不同的forward计算
-        output = x @ parameter_dequantized
 
+        parameter_dequantized = parameter_dequantized.view(self.out_features, self.in_features)
+
+        output = F.linear(x, parameter_dequantized, bias=None) # x @ parameter_dequantized.T
         # 解量化后即释放
         del parameter_dequantized
         return output
+
+        # marlin 
+        # parameter_dequantized = parameter_dequantized.T
+        # # print(f"padding:{self.padding}")
+        # if self.padding:
+        #     padded_weight = torch.zeros(self.in_features, self.out_features, device=self.device)
+        #     padded_weight[:self.orin_in_features, :self.orin_out_features] = parameter_dequantized
+        #     parameter_dequantized = padded_weight
+        # # Pack Marlin linear
+        # marlin_q_w, marlin_s, g_idx, sort_indices, _ = marlin_quantize(
+        #     parameter_dequantized, self.num_bits, self.group_size, self.act_order
+        # )
+        # self.workspace = MarlinWorkspace(
+        #     self.out_features, GPTQ_MARLIN_MIN_THREAD_N, GPTQ_MARLIN_MAX_PARALLEL,self.device
+        # )
+
+        # x = x.to(self.device)
+        # orig_shape = list(x.shape)
+        # orig_dtype = x.dtype
+        # x = x.reshape(-1, orig_shape[-1])
+        # x = x.reshape(-1, x.shape[-1])
+        # if self.padding:
+        #     padding_input=torch.empty(x.shape[0], self.in_features, device=x.device, dtype=x.dtype)
+        #     padding_input[:,:self.orin_in_features] = x
+        #     x = padding_input
+        # marlin_s = marlin_s.to(x.dtype)
+        # x = KTransformersOps.gptq_marlin_gemm(
+        #     x,
+        #     marlin_q_w,
+        #     marlin_s,
+        #     g_idx,
+        #     sort_indices,
+        #     self.workspace.scratch,
+        #     self.num_bits,
+        #     x.shape[0],
+        #     self.n,
+        #     x.shape[-1],
+        #     self.is_k_full,
+        # )
+        # if self.padding:
+        #     x = x[:,:self.orin_out_features]
+        #     orig_shape[-1] = self.orin_out_features
+        # else:
+        #     orig_shape[-1] = self.out_features
+        # del parameter_dequantized
+        # return x.reshape(orig_shape).to(orig_dtype)
+        
+        
+        
+
+        
         
 
     def unload(self):
