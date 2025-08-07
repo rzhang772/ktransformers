@@ -127,7 +127,7 @@ def local_chat(
     except Exception as e:
         print(f"generation config can't auto create, make default. Message: {e}")
         gen_config = GenerationConfig(
-            temperature=0.6,
+            temperature=1e-5,
             top_p=0.95,
             do_sample=True
         )
