@@ -762,9 +762,6 @@ class SLinear(nn.Module):
         # down: (out = hidden_size, in = intermediate_size)
         # print(f"slinear target dtype: {self.target_dtype}")
 
-
-        parameter_dequantized = parameter_dequantized.to(dtype = self.target_dtype)
-
         parameter_dequantized = parameter_dequantized.view(self.out_features, self.in_features)
 
         output = F.linear(x, parameter_dequantized, bias=None) # x @ parameter_dequantized.T
