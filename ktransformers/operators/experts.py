@@ -20,6 +20,9 @@ import sys, os
 from ktransformers.operators.base_operator import BaseInjectedModule
 from tqdm import tqdm
 import nvtx
+import queue
+import threading
+import time
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build"))
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build", "Release"))
@@ -145,9 +148,62 @@ class KExpertsCPU(KExpertsBase):
 
     prefetch_stream = torch.cuda.Stream() if torch.cuda.is_available() else None
     layer_counter = 0
+    hit_rate = []
+
+    _task_queue = queue.Queue() # 用于存储任务
+    _thread_lock = threading.Lock() # 用于保护任务队列的线程安全
+    _thread_started = False # 用于标记线程是否已经启动
+    _thread_ = None # 用于存储线程对象
     #stream_map:dict = {} # Manage cuda stream on different gpu
     # @TODO add yaml
     CPU_INFER = CPUInfer(Config().cpu_infer)
+    print(f"----------------------------------------------------------------------------------------------------CPU_INFER in KExpertsCPU: {Config().cpu_infer}")
+
+    @classmethod
+    def _worker(cls):
+        while True:
+            task = cls._task_queue.get()
+            if task is None:  # 终止信号
+                print(f"Worker thread for {cls.__name__} received termination signal.")
+                break
+            try:
+                obj, func_name, args, kwargs = task
+                func = getattr(obj, func_name)
+                func(*args, **kwargs)
+            except Exception as e:
+                print(f"Error occurred in worker thread: {e}")
+            finally:
+                cls._task_queue.task_done()
+    @classmethod
+    def _start_thread(cls):
+        with cls._thread_lock:
+            if not cls._thread_started:
+                cls._thread_ = threading.Thread(target=cls._worker, daemon=True)
+                cls._thread_.start()
+                cls._thread_started = True
+                print(f"Worker thread started for {cls.__name__}")
+
+    @classmethod
+    def add_task(cls, obj, func, *args, **kwargs):
+        """
+        添加任务到线程池中
+        :param obj: 任务所属对象
+        :param func: 任务函数
+        :param args: 任务函数参数
+        :param kwargs: 任务函数关键字参数
+        """
+        # cls._start_thread()
+        cls._task_queue.put((obj, func, args, kwargs))
+    
+    @classmethod
+    def stop_thread(cls):
+        cls._task_queue.put(None)  # 发送一个终止信号
+        with cls._thread_lock:
+            if cls._thread_started:
+                cls._thread_.join()
+                cls._thread_started = False
+                print(f"======>>>>>>>>>>.  Worker thread stopped for {cls.__name__}")
+
     def __init__(
         self,
         key: str,
@@ -168,6 +224,7 @@ class KExpertsCPU(KExpertsBase):
 
 
         # SMOE: expert cache 初始化
+        self.print_layer = 10
         self.gpu_device = "cuda"
         self.cpu_device = "cpu"
         self.cached_experts_num = 8
@@ -186,7 +243,9 @@ class KExpertsCPU(KExpertsBase):
             "down_projs" : [SLinear(self.moe_intermediate_size, self.hidden_size, gguf_loader, config, target_dtype=target_dtype, linear_type = "down", device=self.gpu_device) for i in range(self.cached_experts_num)]
         }
         self.cached_experts_ids = None # 用于缓存专家的id
-        self.prefetch_event = torch.cuda.Event(blocking=False)
+        # self.prefetch_event = torch.cuda.Event(blocking=True)
+        self.is_prefetch_done = False
+        # print(f"just initialized: {self.prefetch_event.query()}")
         self.layer_id = KExpertsCPU.layer_counter
         KExpertsCPU.layer_counter += 1
 
@@ -195,6 +254,8 @@ class KExpertsCPU(KExpertsBase):
         self.predictor.load_state_dict(torch.load(self.predictor_path, map_location=self.gpu_device))
 
         self.act_fn = ACT2FN[config.hidden_act]
+
+        self._start_thread()
 
 
     def load(self, w: dict | nn.Parameter | tuple | None = None, device:str|None = None, warmup:bool = False):
@@ -225,17 +286,20 @@ class KExpertsCPU(KExpertsBase):
         for i in range(self.cached_experts_num):
             up = self.gguf_loader.load_ggml_expert_from_weights(self.up, i, self.elements_per_expert, self.up_type)
             # print(f"up dtype: {up.dtype}")
-            up = up.to(self.gpu_device)
+            # up = up.to(self.gpu_device)
             gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, i, self.elements_per_expert, self.gate_type)
-            gate = gate.to(self.gpu_device)
+            # gate = gate.to(self.gpu_device)
             down = self.gguf_loader.load_ggml_expert_from_weights(self.down, i, self.elements_per_expert, self.down_type)
-            down = down.to(self.gpu_device)
+            # down = down.to(self.gpu_device)
 
             self.cached_experts["up_projs"][i].load(up)
+            # self.cached_experts["up_projs"][i].print_is_none()
             self.cached_experts["gate_projs"][i].load(gate)
+            # self.cached_experts["gate_projs"][i].print_is_none()
             self.cached_experts["down_projs"][i].load(down)
-        self.cached_experts_ids = torch.arange(0, 8, device=self.gpu_device, dtype=torch.long)
-        self.prefetch_event.record()
+            # self.cached_experts["down_projs"][i].print_is_none()
+        self.cached_experts_ids = torch.arange(0, self.cached_experts_num, device=self.gpu_device, dtype=torch.long)
+        self.is_prefetch_done = True
         
         print(f"==++++++++++++>>>>. {self.key}: Expert cache initialized")
 
@@ -374,7 +438,7 @@ class KExpertsCPU(KExpertsBase):
     
     
     @nvtx.annotate("KExpertsCPU.forward")
-    def forward(self, mode, input_tensor, expert_ids, weights, shared_experts = None, bsz_tensor=None, cuda_graph_idx=0):
+    def forward(self, mode, token_idx, input_tensor, expert_ids, weights, shared_experts = None, bsz_tensor=None, cuda_graph_idx=0, hit_rate=None):
         # generate, capture and run cuda graph
         # print(expert_ids)
         # expert_ids: shape [batch_size, num_experts_per_tok]
@@ -383,8 +447,6 @@ class KExpertsCPU(KExpertsBase):
         # input_tensor: shape [batch_size, sequence_length, hidden_dim]
         # print(f"expert_ids.shape: {expert_ids.shape}, weights.shape: {weights.shape}")
         # expert_ids, weights shape [batch_size * sequence_length, num_experts_per_tok]
-        
-        
 
         identity = input_tensor
         input_tensor = input_tensor.view(-1, input_tensor.size(-1)) # reshape [batch_size * sequence_length, hidden_dim]  
@@ -439,12 +501,24 @@ class KExpertsCPU(KExpertsBase):
             return KExpertsCPU.output_gpu_map[self.out_device].view(1, -1)
         else:
             if mode == "decode":
+                gpu_compute = True
                 # print(f"decode layer {self.layer_id}")
                 # print(f"expert_ids: {expert_ids}, weights: {weights}")
                 # in_gpu_mask: multihot mask from cached_expert_ids, type: list, shape:(n_routed_experts,)
                 in_gpu_mask = torch.zeros(self.n_routed_experts, dtype=torch.int64, device=self.cpu_device)
-                # for i in range(self.cached_experts_num):
-                #     in_gpu_mask[self.cached_experts_ids[i].item()] = 1
+                if gpu_compute:
+                    for i in range(self.cached_experts_num):
+                        in_gpu_mask[self.cached_experts_ids[i].item()] = 1
+
+                mmask = torch.isin(expert_ids.squeeze(), self.cached_experts_ids)
+                hn = mmask.sum()
+                hn_rate = hn.item() / self.cached_experts_num
+                hit_rate.append(hn_rate)
+                # print(f"Layer {self.layer_id}, mmask sum: {mmask.sum()}, hit rate: {hn}")
+                # print(f"cached_experts_ids: {self.cached_experts_ids}")
+                # print(f"expert_ids:         {expert_ids}; hit_rate: {hit_rate[-1]}")
+                # time.sleep(1)
+                
                 
                 input_tensor = input_tensor.contiguous().cpu()
                 expert_ids = expert_ids.contiguous().cpu()
@@ -463,14 +537,28 @@ class KExpertsCPU(KExpertsBase):
                 
                 
                 # cpu output
-                self.cpu_infer.submit(self.moe.forward(expert_ids.size(0), 
-                                                    expert_ids.size(1), 
-                                                    expert_ids.data_ptr(), 
-                                                    weights.data_ptr(), 
-                                                    in_gpu_mask.data_ptr(), # 是否在GPU上
-                                                    input_tensor.data_ptr(), 
+                @nvtx.annotate("KExpertsCPU.cpu_commit", color="red")
+                def cpu_commit():
+                    self.cpu_infer.submit(self.moe.forward(expert_ids.size(0),
+                                                            expert_ids.size(1),
+                                                            expert_ids.data_ptr(),
+                                                            weights.data_ptr(),
+                                                            in_gpu_mask.data_ptr(),  # 是否在GPU上
+                                                            input_tensor.data_ptr(),
                                                     output.data_ptr(), 
                                                     bsz_tensor.data_ptr()))
+                cpu_commit()
+                # self.cpu_infer.submit_with_cuda_stream(torch.cuda.current_stream().cuda_stream,
+                #                                        self.moe.forward(expert_ids.size(0), 
+                #                                                         expert_ids.size(1), 
+                #                                                         expert_ids.data_ptr(), 
+                #                                                         weights.data_ptr(), 
+                #                                                         in_gpu_mask.data_ptr(), # 是否在GPU上
+                #                                                         input_tensor.data_ptr(), 
+                #                                                         output.data_ptr(), 
+                #                                                         bsz_tensor.data_ptr()
+                #                                                         )
+                #                                       )
                 # shape [batch_size, sequence_length, hidden_dim]
                 # print(f"output.shape:{output.shape}")
                 
@@ -480,27 +568,54 @@ class KExpertsCPU(KExpertsBase):
                 # print(f"y_.shape: {y_.shape}, y_.dtype: {y_.dtype}")
 
                 # prefetch check
-                # if not self.prefetch_event.query():
-                #     torch.cuda.current_stream().wait_event(self.prefetch_event)
+                # if self.prefetch_event.query():
+                #     print(f"done")
+                # else:
+                #     print(f"waiting prefetching experts for token {token_idx} in layer {self.layer_id}")
+                # torch.cuda.current_stream().wait_event(self.prefetch_event)
+                # self.prefetch_event.synchronize()
+
+                # @nvtx.annotate("KExpertsCPU.wait_for_prefetch", color="green")
+                # def wait_for_prefetch():
+                #     while self.is_prefetch_done == False:
+                #         continue
+                # wait_for_prefetch()
+                
                 
 
                 # gpu expert output
-                gpu_output = self.compute_gpu_experts(identity, expert_ids, weights)
+                # if self.layer_id == self.print_layer:
+                #     print(f"\nToken {token_idx}, layer {self.layer_id}, compute GPU experts: {expert_ids}, cached: {self.cached_experts_ids}, hited: {hn}")
+                if gpu_compute:
+                    gpu_output = self.compute_gpu_experts(identity, expert_ids, weights)
+                    # gpu_output = self.compute_gpu_experts_one(identity, expert_ids, weights)
                 
 
+                
                 # sync cpu and gpu
-                self.cpu_infer.sync()
+                @nvtx.annotate("KExpertsCPU.cpu_sync", color="red")
+                def cpu_sync():
+                    self.cpu_infer.sync()
+                cpu_sync()
                 output = output.to(device=object.__getattribute__(self, "out_device")).view(identity.shape)
                 # print(f"output.type: {output.dtype}, output.shape: {output.shape}")
 
                 # prefetch next experts in independent prefetch stream
                 # reset prefetch event
-                # self.prefetch_event = torch.cuda.Event(blocking=False)
+                # self.prefetch_event = torch.cuda.Event(blocking=True)
+                # self.prefetch_event.record(KExpertsCPU.prefetch_stream)
+                
+                # self.is_prefetch_done = False
+                # if self.layer_id == self.print_layer:
+                #     print(f"just reset flag: {self.is_prefetch_done}")
+                # KExpertsCPU.add_task(self, "prefetch_experts", token_idx, identity, expert_ids)
+                
                 # self.prefetch_experts(identity, expert_ids)
 
                 # get final output
                 output += y_
-                output += gpu_output
+                if gpu_compute:
+                    output += gpu_output
                 return output
             else:
                 # non-generate mode, compute experts on CPU
@@ -518,9 +633,31 @@ class KExpertsCPU(KExpertsBase):
                                                        input_tensor.data_ptr(), 
                                                        output.data_ptr(), 
                                                        bsz_tensor.data_ptr()))
+                y_ = shared_experts(identity)
                 self.cpu_infer.sync()
-                return output.to(device=object.__getattribute__(self, "out_device"))
+                output = output.to(device=object.__getattribute__(self, "out_device")).view(identity.shape)
+                output += y_
+                return output
             # return output.to(device=object.__getattribute__(self, "out_device"))
+            # in_gpu_mask = torch.zeros(self.n_routed_experts, dtype=torch.int64, device=self.cpu_device)
+            # input_tensor = input_tensor.contiguous().cpu()
+            # expert_ids = expert_ids.contiguous().cpu()
+            # weights = weights.contiguous().to(torch.float32).cpu()
+            # bsz_tensor = bsz_tensor.contiguous().cpu()
+            # output = torch.empty_like(input_tensor).contiguous()
+            # self.cpu_infer.submit(self.moe.forward(expert_ids.size(0), 
+            #                                        expert_ids.size(1), 
+            #                                        expert_ids.data_ptr(), 
+            #                                        weights.data_ptr(), 
+            #                                        in_gpu_mask.data_ptr(), # 是否在GPU上
+            #                                        input_tensor.data_ptr(), 
+            #                                        output.data_ptr(), 
+            #                                        bsz_tensor.data_ptr()))
+            # # y_ = shared_experts(identity)
+            # self.cpu_infer.sync()
+            # output = output.to(device=object.__getattribute__(self, "out_device")).view(identity.shape)
+            # # output += y_
+            # return output
     
     @nvtx.annotate("KExpertsCPU.compute_gpu_experts")
     def compute_gpu_experts(self, input_tensor, expert_ids, weights):
@@ -555,6 +692,7 @@ class KExpertsCPU(KExpertsBase):
         input_tensor = input_tensor.to(self.gpu_device)  # 确保输入张量在GPU上
         expert_ids = expert_ids.to(self.gpu_device)  # 确保expert_ids在GPU上
         weights = weights.to(self.gpu_device)  # 确保weights在GPU上
+        # print(f"shapes: {input_tensor.shape}, {expert_ids.shape}, {weights.shape}")
 
         # 初始化加权输出
         weighted_output = torch.zeros_like(input_tensor, device=self.gpu_device, dtype=input_tensor.dtype)  # [batch_size, sequence_length, hidden_dim]
@@ -599,10 +737,41 @@ class KExpertsCPU(KExpertsBase):
             weighted_output.index_add_(0, idx_b, downed_weighted)
 
         return weighted_output
-        
+    
+    @nvtx.annotate("KExpertsCPU.compute_gpu_experts_one")
+    def compute_gpu_experts_one(self, input_tensor, expert_ids, weights):
+        '''
+        input_tensor: [1, 1, hidden_dim]
+        expert_ids: [1, 8]
+        weights: [1, 8]
+        '''
+        input_tensor = input_tensor.to(self.gpu_device)  # 确保输入张量在GPU上
+        expert_ids = expert_ids.to(self.gpu_device)  # 确保expert_ids在GPU上
+        weights = weights.to(self.gpu_device)  # 确保weights在GPU上
+
+        weighted_output = torch.zeros_like(input_tensor, device=self.gpu_device, dtype=input_tensor.dtype)  # [batch_size, sequence_length, hidden_dim]
+
+        for i in range(self.cached_experts_num):
+            if self.cached_experts_ids[i] not in expert_ids:
+                continue
+            else:
+            # if self.cached_experts_ids[i] in expert_ids:
+                gate_proj = self.cached_experts["gate_projs"][i]
+                up_proj = self.cached_experts["up_projs"][i]
+                down_proj = self.cached_experts["down_projs"][i]
+                gated = gate_proj(input_tensor, self.gate_type)
+                upped = up_proj(input_tensor, self.up_type)
+                activated = self.act_fn(gated) * upped
+                downed = down_proj(activated, self.down_type)
+
+                weight = weights[expert_ids == self.cached_experts_ids[i]].view(-1, 1, 1)  # [N, 1, 1]
+                weighted = downed * weight  # [N, sequence_length, hidden_dim]
+                weighted_output = weighted_output + weighted
+
+        return weighted_output
 
     @nvtx.annotate("KExpertsCPU.prefetch_experts")
-    def prefetch_experts(self, input_tensor, expert_ids):
+    def prefetch_experts(self,token_idx, input_tensor, expert_ids):
         """
         Predict next experts and update expert cache efficiently:
         - 统计 predicted_experts 出现频次，按频次从高到低选8个专家
@@ -610,6 +779,9 @@ class KExpertsCPU(KExpertsBase):
         - 替换时保持 cached_experts 中顺序不变，仅在可替换位置更新
         - 同步更新 self.cached_experts_ids
         """
+        if self.layer_id == self.print_layer:
+            print(f"before prefetch flag {self.is_prefetch_done}")
+        # torch.cuda.set_device(self.gpu_device)
         def batch_multihot_encode(y_idx_batch):
             batch_size = y_idx_batch.size(0)
             y = torch.zeros(batch_size, self.config.n_routed_experts)
@@ -621,8 +793,9 @@ class KExpertsCPU(KExpertsBase):
         expert_ids = expert_ids.to(self.gpu_device)  # 确保expert_ids在GPU上
         # 将expert_ids转换为multihot编码 (B, E) -> (B, 256)
         expert_mask = batch_multihot_encode(expert_ids).to(self.gpu_device)  # shape [batch_size, expert_num]
-        with torch.cuda.stream(self.prefetch_stream):
+        with torch.cuda.stream(KExpertsCPU.prefetch_stream):
             predicted_experts, probs = self.predictor.predict(input_tensor.reshape(-1, input_tensor.shape[2]), expert_mask=expert_mask)
+            # print(f"predicted:          {predicted_experts}")
             predicted_flat = predicted_experts.flatten()
 
             # 1) 统计出现频次
@@ -640,6 +813,9 @@ class KExpertsCPU(KExpertsBase):
 
             replace_num = min(len(need_load_ids), len(can_replace_indices))
 
+            if self.layer_id == self.print_layer:
+                print(f"Token {token_idx}, layer {self.layer_id}, cache {self.cached_experts_ids}, predicted {predicted_experts}, need prefetch {replace_num} experts")
+
             if replace_num > 0:
                 replace_ids = need_load_ids[:replace_num].to(self.cpu_device)
                 replace_indices = can_replace_indices[:replace_num]
@@ -649,16 +825,16 @@ class KExpertsCPU(KExpertsBase):
                     new_id = new_id_tensor.item()
 
                     # ⚠️ 仅在需要替换时执行 load
-                    self.cached_experts["up_projs"][idx].unload()
-                    self.cached_experts["gate_projs"][idx].unload()
-                    self.cached_experts["down_projs"][idx].unload()
+                    # self.cached_experts["up_projs"][idx].unload()
+                    # self.cached_experts["gate_projs"][idx].unload()
+                    # self.cached_experts["down_projs"][idx].unload()
 
-                    up = self.gguf_loader.load_ggml_expert_from_weights(self.up, new_id, self.elements_per_expert, self.up_type)
-                    up = up.to(self.gpu_device, non_blocking=True)
-                    gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, new_id, self.elements_per_expert, self.gate_type)
-                    gate = gate.to(self.gpu_device, non_blocking=True)
-                    down = self.gguf_loader.load_ggml_expert_from_weights(self.down, new_id, self.elements_per_expert, self.down_type)
-                    down = down.to(self.gpu_device, non_blocking=True)
+                    up = self.gguf_loader.load_ggml_expert_from_weights(self.up, new_id, self.elements_per_expert, self.up_type).pin_memory()
+                    # up = up.to(self.gpu_device, non_blocking=True)
+                    gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, new_id, self.elements_per_expert, self.gate_type).pin_memory()
+                    # gate = gate.to(self.gpu_device, non_blocking=True)
+                    down = self.gguf_loader.load_ggml_expert_from_weights(self.down, new_id, self.elements_per_expert, self.down_type).pin_memory()
+                    # down = down.to(self.gpu_device, non_blocking=True)
 
                     self.cached_experts["up_projs"][idx].load(up)
                     self.cached_experts["gate_projs"][idx].load(gate)
@@ -666,8 +842,14 @@ class KExpertsCPU(KExpertsBase):
 
                     # 更新缓存 ID
                     self.cached_experts_ids[idx] = new_id
+            # print(f"after prefetch:     {self.cached_experts_ids}")
             # cuda event
-            self.prefetch_event.record(torch.cuda.current_stream(self.out_device))
+            # if self.layer_id == self.print_layer:
+            #     print(f"beToken {token_idx}, layer {self.layer_id}, prefetch done! event {self.prefetch_event.query()}")
+            # self.prefetch_event.record(KExpertsCPU.prefetch_stream)
+            self.is_prefetch_done = True
+            if self.layer_id == self.print_layer:
+                print(f"Token {token_idx}, layer {self.layer_id}, prefetch done! flag {self.is_prefetch_done}")
 
     def unload(self):
         return
@@ -1019,7 +1201,7 @@ class KTransformersExperts(BaseInjectedModule, KExpertsBase):
     def load(self, w: dict = None,  mode: InferenceState = None, warmup: bool = True):
         # TODO support w as input
         if not mode: mode = InferenceState.GENERATE
-        print(f"----------------------> Loading experts in {mode} mode, from KTransformersExperts")
+        # print(f"----------------------> Loading experts in {mode} mode, from KTransformersExperts")
         if mode == InferenceState.GENERATE:
             self.prefill_experts.unload()
             self.generate_experts.load(w, warmup=warmup)
@@ -1045,10 +1227,10 @@ class KTransformersExperts(BaseInjectedModule, KExpertsBase):
         self.device = self.generate_experts.device
 
     @nvtx.annotate("KTransformersExperts.forward")
-    def forward(self, mode, input_tensor, expert_ids, weights, shared_experts=None):
+    def forward(self, mode, token_idx, input_tensor, expert_ids, weights, shared_experts=None, hit_rate=None):
         if self.mode == InferenceState.GENERATE:
             assert self.generate_experts is not None, "generate_experts is None"
-            return self.generate_experts.forward(mode, input_tensor, expert_ids, weights, shared_experts=shared_experts)
+            return self.generate_experts.forward(mode, token_idx, input_tensor, expert_ids, weights, shared_experts=shared_experts, hit_rate=hit_rate)
         elif self.mode == InferenceState.PREFILL:
             assert self.prefill_experts is not None, "prefill_experts is None"
             return self.prefill_experts.forward(input_tensor, expert_ids, weights)
@@ -1302,7 +1484,8 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
                 f.write("\n")
     
     @nvtx.annotate("KDeepseekV3MoE.forward")
-    def forward(self, hidden_states, prompt_name, mode, token_idx):
+    def forward(self, hidden_states, prompt_name, mode, token_idx, hit_rate):
+        # print(f"===>>>>    token_idx:{token_idx}")
         identity = hidden_states # shape [batch_size, sequence_length, hidden_dim]
         orig_shape = hidden_states.shape
         sequence_length = orig_shape[1]
@@ -1314,7 +1497,7 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
         # self.record_topk_idx(prompt_name, mode, token_idx, self.layer_id, topk_idx, hidden_states)
         
         
-        # only for generate phase
+        
         if sequence_length == 1 and hasattr(self.experts.generate_experts, "submit_for_one_decode") and torch.cuda.is_available() and torch.cuda.is_current_stream_capturing():
             self.experts.generate_experts.submit_for_one_decode(hidden_states[0], topk_idx[0], topk_weight[0], self.layer_id)
             if self.config.n_shared_experts is not None:
@@ -1332,7 +1515,7 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
         # routed experts 如果是KTrans的实现，则进入experts的forward方法  
         # 修改：将shared_experts的参数传入routed experts的forward方法实现并行计算  
         if isinstance(self.experts, KExpertsBase):
-            y = self.moe_kexperts(mode, hidden_states, topk_idx, topk_weight, shared_experts=self.shared_experts).view(*orig_shape).to(device=hidden_states.device)
+            y = self.moe_kexperts(mode, token_idx, hidden_states, topk_idx, topk_weight, shared_experts=self.shared_experts, hit_rate = hit_rate).view(*orig_shape).to(device=hidden_states.device)
         elif hidden_states.size(0) > 10:
             # TODO may bugs here
             y = (
@@ -1354,8 +1537,8 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
 
 
     @torch.no_grad()
-    def moe_kexperts(self, mode, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor, shared_experts = None) -> torch.Tensor:
-        outs = self.experts(mode, x, topk_ids, topk_weight, shared_experts)
+    def moe_kexperts(self, mode, token_idx, x: torch.Tensor, topk_ids: torch.Tensor, topk_weight: torch.Tensor, shared_experts = None, hit_rate = None) -> torch.Tensor:
+        outs = self.experts(mode, token_idx, x, topk_ids, topk_weight, shared_experts, hit_rate)
         return outs
 
     @torch.no_grad()

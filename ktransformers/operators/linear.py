@@ -85,7 +85,7 @@ class KLinearBase(ABC):
             keys = override_key
         else:
             keys = [self.key]
-        print(f"=^^^^^^^^^^^^^^^^^^^{keys}, {self.key}")
+        # print(f"=^^^^^^^^^^^^^^^^^^^{keys}, {self.key}")
         for key in keys:
             if isinstance(self.gguf_loader, SafeTensorLoader):
                 # using safetensor_loader
@@ -609,8 +609,8 @@ class KLinearMarlin(KLinearBase):
         #if self.in_features * self.out_features:
         if w is None: 
             w = self.load_weight(device=device)
-            print(f"w.shape = {w.shape}") 
-            print(f"w.dtype = {w.dtype}")
+            # print(f"w.shape = {w.shape}") 
+            # print(f"w.dtype = {w.dtype}")
 
         if isinstance(w, nn.Parameter):
             # pad weight
@@ -747,8 +747,17 @@ class SLinear(nn.Module):
         # assert self.device == parameter_tensor.device, f"self.device is: {self.device}, but parameter_tensor is in {parameter_tensor.device}"
         # assert parameter_tensor.shape == (self.hidden_size, self.intermediate_size), f"Expected shape ({self.hidden_size}, {self.intermediate_size}), but got {parameter_tensor.shape}"
 
-        self.parameter_quantized = parameter_tensor
+        # self.parameter_quantized = parameter_tensor
+        if self.parameter_quantized is None:
+            # print(f"loaddddddddddddding, {self.parameter_quantized}")
+            self.parameter_quantized = parameter_tensor.to(self.device)
+            # print(f"{self.parameter_quantized}")
+        else:
+            self.parameter_quantized.copy_(parameter_tensor.to(self.device), non_blocking=True)
         return
+    def print_is_none(self):
+        print(f"parameter_quantized is None: {self.parameter_quantized is None}")
+
     
     # up_gpu[i], requires_grad=False, device=self.gpu_device)
     @nvtx.annotate("SLinear.forward")

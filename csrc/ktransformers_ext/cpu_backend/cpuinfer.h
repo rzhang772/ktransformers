@@ -56,12 +56,14 @@
      }
  
      // 接受参数为一个 std::pair<intptr_t, intptr_t>，其中第一个元素是函数指针，第二个元素是参数指针
+     // 实际上python中moe类的forward绑定的不是C++实现的forward，而是在绑定时封装了一层绑定接口方法调用inner()在inner中执行入队cpuinfer.enqueue(moe.forward, args) -> task_queue.enqueue(invoke())
+     // 实际绑定的forward接口会返回一个pair<inner, args>
      void submit(std::pair<intptr_t, intptr_t> params) {
-         void (*func)(void*) = (void (*)(void*))params.first;
-         void* args = (void*)params.second;
+         void (*func)(void*) = (void (*)(void*))params.first;// invoke(): 
+         void* args = (void*)params.second;// 包装的args
 
          *((CPUInfer**)args) = this;
-         func(args);
+         func(args);// invoke()
      }
  
      void sync() {
@@ -94,7 +96,9 @@
  
     public:
      Backend* backend_;
-     TaskQueue* task_queue_;
+     TaskQueue* task_queue_;// task_queue中有一个线程负责监视队列，只要有任务就执行，具体执行时也就是moe.forward()中才调用backend中的线程池处理具体的计算任务
+
+     TaskQueue* prefetch_task_queue_;
  };
  
  #endif

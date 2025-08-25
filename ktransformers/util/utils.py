@@ -11,6 +11,7 @@ from torch import nn
 import nvtx
 import itertools
 import time
+import json 
 import enum
 from transformers import (
     LogitsProcessorList,
@@ -109,7 +110,7 @@ def load_cur_state_dict(module: nn.Module, gguf_loader: ModelLoader, prefix: str
     for name, param in local_state.items():
         key = prefix + name
         translated_key = key
-        print(f"==========>>> loading {translated_key} to {device}")
+        # print(f"==========>>> loading {translated_key} to {device}")
         
         # TODO: Merge all loader.
         # I know this is ugly but lets do it for now.
@@ -223,7 +224,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     tokens = []
     
     @nvtx.annotate("decode_one_tokens")
-    def decode_one_tokens(cuda_graph_runner, cur_token, position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph: bool = True, prompt_name = None, token_idx = None):
+    def decode_one_tokens(cuda_graph_runner, cur_token, position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph: bool = True, prompt_name = None, token_idx = None, hit_rate = None):
         if cuda_graph_runner is None:
             use_cuda_graph = False
         use_cuda_graph = False
@@ -246,7 +247,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                         return_dict=False, use_cache=True,
                         prompt_name = prompt_name,
                         mode = "decode",
-                        token_idx = token_idx)[0]
+                        token_idx = token_idx,
+                        hit_rate = hit_rate)[0]
         if past_key_values != None and isinstance(past_key_values, StaticCache):
             past_key_values.change_seq_length(1)
         sync_all_device(all_cuda_device)
@@ -356,6 +358,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             
         start_time = time.time()
         use_cuda_graph = False
+        hit_rate = []
         for i in range(1, max_new_tokens):
             if use_flashinfer_mla:
                 MLAWrapperSingleton.plan_all(None,None,None,position_ids.squeeze(1)+1,None,
@@ -378,7 +381,17 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             #     prof.step()
             # prof.export_chrome_trace(f"./generate_{i}.json")
 
-            next_token = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph, prompt_name = prompt_name, token_idx=i).to(torch_device)
+            next_token = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), 
+                                           position_ids, 
+                                           cache_position, 
+                                           past_key_values, 
+                                           logits_warper, 
+                                           generation_config, 
+                                           use_cuda_graph, 
+                                           prompt_name = prompt_name, 
+                                           token_idx=i,
+                                           hit_rate=hit_rate
+                                           ).to(torch_device)
             inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
             generated_ids[:, cache_position] = next_token.int()
             tokens.append(int(next_token))
@@ -393,10 +406,12 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             cache_position += 1
             position_ids = cache_position.unsqueeze(0)
         
-
+    # KExpertsCPU.stop_thread() # stop prefetch thread
     total_time = time.time() - start_time
     tokens_generated = len(tokens)
     tokens_per_second = tokens_generated / total_time
+    # with open("list.json", "w") as f:
+    #     json.dump(hit_rate, f)
 
     print("")
 
@@ -406,6 +421,15 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     print(f"eval count:           {tokens_generated} token(s)")
     print(f"eval duration:        {total_time}s")
     print(f"eval rate:            {tokens_per_second} tokens/s")
+    if len(hit_rate) > 0:
+        print(f"hit rate:             {sum(hit_rate)/len(hit_rate)}")
+        print(f"sum of hit_rate:      {sum(hit_rate)}")
+        print(f"hit_rate length:      {len(hit_rate)}")
+        print(f"type of hit_rate:      {type(hit_rate)}")
+        print(f"type of hit_rate ele:  {type(hit_rate[0])}")
+
+    # for i in hit_rate:
+    #     print(i, end=", ")
 
     return tokens
 

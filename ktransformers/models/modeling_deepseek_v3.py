@@ -392,7 +392,8 @@ class DeepseekV3MLP(nn.Module):
     def forward(self, x, 
                 prompt_name: Optional[str] = None,
                 mode: Optional[str] = None, 
-                token_idx: Optional[torch.Tensor] = None):
+                token_idx: Optional[torch.Tensor] = None,
+                hit_rate: Optional[list[float]] = None):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj # shape: [batch_size, seq_len, hidden_size]
 
@@ -1187,6 +1188,7 @@ class DeepseekV3DecoderLayer(nn.Module):
         prompt_name: Optional[str] = None,
         mode: Optional[str] = None,
         token_idx: Optional[torch.LongTensor] = None,
+        hit_rate: Optional[list[float]] = None,
         **kwargs,
     ) -> Tuple[
         torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
@@ -1229,7 +1231,7 @@ class DeepseekV3DecoderLayer(nn.Module):
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states, prompt_name, mode, token_idx)
+        hidden_states = self.mlp(hidden_states, prompt_name, mode, token_idx, hit_rate)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -1666,6 +1668,7 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel, GenerationMixin):
         prompt_name: Optional[str] = None,
         mode: Optional[str] = None,
         token_idx: Optional[torch.LongTensor] = None,
+        hit_rate: Optional[list[float]] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -1721,6 +1724,7 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel, GenerationMixin):
             prompt_name=prompt_name,
             mode=mode,
             token_idx=token_idx,
+            hit_rate=hit_rate,
         )
 
         hidden_states = outputs[0]

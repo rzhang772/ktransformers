@@ -11,6 +11,7 @@
 #include <iostream>
 #include <cstdint>
 #include <cassert>
+#include <thread>
 
 #ifdef USE_NUMA
 #include <numa.h>
@@ -288,28 +289,18 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights,
                 s_output_fp32_[i] += s_down_output_[expert_idx][i] * weights[expert_idx];
             }
         }
-        // printf("====================in forward_one() after down====================\n");
         // 将本块的输出写到最终输出中，如果块大小允许
         if (config_.stride % ggml_blck_size(config_.hidden_type) == 0) {
-            // printf("====================in forward_one() after down1====================\n");
             float* output_fp32_ptr = s_output_fp32_ + ith * config_.stride;
-            // printf("====================in forward_one() after down2====================\n");
             void* output_ptr = (uint8_t*)output + ith * config_.stride * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type);
-            // printf("====================in forward_one() after down3====================\n");
             from_float(output_fp32_ptr, output_ptr, config_.stride, config_.hidden_type);
-            // printf("====================in forward_one() after down4====================\n");
         }
-        // printf("====================in forward_one() after down5====================\n");
     }, nullptr);
 
     // 如果块大小不允许按块移动，则以expert为单位移动
-    // printf("====================in forward_one() after down6====================\n");
     if (config_.stride % ggml_blck_size(config_.hidden_type) != 0) {
-        // printf("====================in forward_one() after down7====================\n");
         from_float(s_output_fp32_, output, config_.hidden_size, config_.hidden_type);
-        // printf("====================in forward_one() after down8====================\n");
     }
-    // printf("====================in forward_one() after down9====================\n");
 }
 
 /**
@@ -436,8 +427,8 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
         }
     }, nullptr);
 
-    stride = QK_K;
-    nth = config_.hidden_size / stride;
+    stride = QK_K; // 256
+    nth = config_.hidden_size / stride; 
     // 计算 down_input @ down_proj
     backend->do_work_stealing_job(nth * config_.expert_num, nullptr, [&](int task_id) {
         uint64_t expert_idx = task_id / nth;
@@ -480,6 +471,7 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
 void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weights,
      const uint64_t* in_gpu_mask, 
      const void* input, void* output, int* batch_size_tensor, Backend* backend) {
+    // std::cout<< "MoE.forward() thread id:" <<std::this_thread::get_id() << std::endl;
     qlen = batch_size_tensor[0]; // qlen = batch_size * seq_len
     if (qlen < config_.group_min_len) {
         for (int i = 0; i < qlen; i++) {
