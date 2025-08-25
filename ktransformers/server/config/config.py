@@ -159,7 +159,8 @@ class Config(metaclass=Singleton):
 
         # ext
         self.ext: dict = cfg.get("ext", {})
-        self.cpu_infer = psutil.cpu_count(logical=False) - 3
+        # self.cpu_infer = psutil.cpu_count(logical=False) - 3
+        self.cpu_infer = 10
 
         # file config
         self.local_store_configs: dict = cfg.get("local_store", {})
