@@ -34,6 +34,7 @@ import torch.version
 from wheel.bdist_wheel import bdist_wheel as _bdist_wheel
 from setuptools import setup, Extension
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension, CUDA_HOME, ROCM_HOME
+# from torch.utils.cpp_extension import include_paths
 try:
     from torch_musa.utils.simple_porting import SimplePorting
     from torch_musa.utils.musa_extension import BuildExtension, MUSAExtension, MUSA_HOME
@@ -500,6 +501,14 @@ class CMakeBuild(BuildExtension):
             f"-DPYTHON_EXECUTABLE={sys.executable}",
             f"-DCMAKE_BUILD_TYPE={cfg}",  # not used on MSVC, but no harm
         ]
+        
+
+        # torch_includes = include_paths()
+        # cmake_args += [f"-DCMAKE_CXX_FLAGS=" + " ".join([f"-I{inc}" for inc in torch_includes])]
+
+        # torch_libs = ":".join(torch.utils.cpp_extension.library_paths())
+        # cmake_args.append(f"-DCMAKE_PREFIX_PATH={torch_libs}")
+        
 
         if CUDA_HOME is not None:
             cmake_args += ["-DKTRANSFORMERS_USE_CUDA=ON"]

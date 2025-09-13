@@ -14,12 +14,12 @@
 #include <numa.h>
 #include <numaif.h>
 
-thread_local int Backend::numa_node = -1;
+thread_local int KBackend::numa_node = -1;
 #endif
 
-thread_local int Backend::thread_local_id = -1;
+thread_local int KBackend::thread_local_id = -1;
 
-Backend::Backend(int max_thread_num) {
+KBackend::KBackend(int max_thread_num) {
     max_thread_num_ = max_thread_num;
     thread_state_.resize(max_thread_num_);
     for (int i = 0; i < max_thread_num_; i++) {
@@ -28,11 +28,11 @@ Backend::Backend(int max_thread_num) {
     }
     workers_.resize(max_thread_num_);
     for (int i = 1; i < max_thread_num_; i++) {
-        workers_[i] = std::thread(&Backend::worker_thread, this, i);
+        workers_[i] = std::thread(&KBackend::worker_thread, this, i);
     }
 }
 
-Backend::~Backend() {
+KBackend::~KBackend() {
     for (int i = 0; i < max_thread_num_; i++) {
         thread_state_[i].status->store(ThreadStatus::EXIT, std::memory_order_release);
     }
@@ -43,9 +43,9 @@ Backend::~Backend() {
     }
 }
 
-int Backend::get_thread_num() { return max_thread_num_; }
+int KBackend::get_thread_num() { return max_thread_num_; }
 
-void Backend::do_work_stealing_job(int task_num, std::function<void(int)> init_func, std::function<void(int)> compute_func, std::function<void(int)> finalize_func) {
+void KBackend::do_work_stealing_job(int task_num, std::function<void(int)> init_func, std::function<void(int)> compute_func, std::function<void(int)> finalize_func) {
     init_func_ = init_func;
     compute_func_ = compute_func;
     finalize_func_ = finalize_func;
@@ -75,7 +75,7 @@ void Backend::do_work_stealing_job(int task_num, std::function<void(int)> init_f
     }
 }
 
-void Backend::process_tasks(int thread_id) {
+void KBackend::process_tasks(int thread_id) {
     
     #ifdef USE_NUMA
     if(numa_node == -1){
@@ -118,7 +118,7 @@ void Backend::process_tasks(int thread_id) {
     thread_state_[thread_id].status->store(ThreadStatus::WAITING, std::memory_order_release);
 }
 
-void Backend::worker_thread(int thread_id) {
+void KBackend::worker_thread(int thread_id) {
     auto start = std::chrono::steady_clock::now();
     thread_local_id = thread_id; // 设置线程本地变量
     while (true) {

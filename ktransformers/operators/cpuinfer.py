@@ -747,6 +747,9 @@ class CPUInfer:
 
     def sync_with_cuda_stream(self, current_cuda_stream):
         CPUInfer.cpuinfer.sync_with_cuda_stream(current_cuda_stream)
+    
+    def submit_prefetch(self, task):
+        CPUInfer.cpuinfer.submit_prefetch(task)
 
 
         

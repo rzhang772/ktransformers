@@ -4,8 +4,6 @@ Author       : Boxin Zhang, Azure-Tang
 Version      : 0.1.0
 Copyright (c) 2024 by KVCache.AI, All Rights Reserved. 
 """
-
-import os
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import platform
@@ -198,7 +196,6 @@ def local_chat(
                 generated = prefill_and_generate(
                     model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size, prompt_name=prompt_name
                 )
-            KExpertsCPU.stop_thread()
 
 
             break

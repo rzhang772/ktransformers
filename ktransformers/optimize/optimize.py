@@ -125,7 +125,7 @@ def optimize_and_load_gguf(module: nn.Module, rule_file: str, gguf_path: str, mo
 
     weights_loader = ModelLoaderFactory.create_loader(gguf_path)
     # 打印gguf_loader的tensor信息
-    # with open("log_tensor_info.txt", "w", encoding="utf-8") as f:
+    # with open("V3_Q4XS_log_tensor_info.txt", "w", encoding="utf-8") as f:
     #     print(weights_loader.tensor_info, file=f)
     # print(weights_loader.tensor_info)
     # exit(0)

@@ -30,6 +30,7 @@ TaskQueue::~TaskQueue() {
 }
 
 void TaskQueue::enqueue(std::function<void()> task) {
+    // printf("in TaskQueue::enqueue!!!!!!!\n");
     {
         mutex.lock();
         tasks.push(task);

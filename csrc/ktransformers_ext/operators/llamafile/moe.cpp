@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cassert>
 #include <thread>
+#include <cuda_runtime.h>
 
 #ifdef USE_NUMA
 #include <numa.h>
@@ -102,6 +103,19 @@ MOE::MOE(MOEConfig config) {
     m_local_intermediate_fp32_ptr_.resize(config_.expert_num);
     m_local_down_input_ptr_.resize(config_.expert_num);
     m_local_down_output_ptr_.resize(config_.expert_num);
+
+    gate_nbytes = gate_bytes();
+    up_nbytes   = up_bytes();
+    down_nbytes = down_bytes();
+    
+    // printf("MOE::MOE, up_nbytes: %zu, gate_nbytes: %zu, down_nbytes: %zu\n", up_nbytes, gate_nbytes, down_nbytes);
+    cudaError_t err;
+    err = cudaMallocHost(&up_proj_pinned,   up_nbytes);
+    if (err != cudaSuccess) {
+    printf("cudaMallocHost failed: %s\n", cudaGetErrorString(err));
+}
+    cudaMallocHost(&gate_proj_pinned, gate_nbytes);
+    cudaMallocHost(&down_proj_pinned, down_nbytes);
 }
 
 MOE::~MOE() {
@@ -115,9 +129,14 @@ MOE::~MOE() {
         numa_free(down_proj_numa_[i], config_.expert_num * config_.hidden_size * config_.intermediate_size * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type));
     }
     #endif
+
+    // moe_free_pinned(up_proj_pinned, gate_proj_pinned, down_proj_pinned);
+    if (up_proj_pinned)   cudaFreeHost(up_proj_pinned);
+    if (gate_proj_pinned) cudaFreeHost(gate_proj_pinned);
+    if (down_proj_pinned) cudaFreeHost(down_proj_pinned);
 }
 
-void MOE::warm_up(Backend* backend) {
+void MOE::warm_up(KBackend* backend) {
     std::vector<float> input_fp32(config_.hidden_size);
     std::vector<uint8_t> input(config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type));
     std::vector<uint8_t> output(config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type));
@@ -154,7 +173,7 @@ output: [1, hidden_size]，输出的token
 */
 void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights,
      const uint64_t* in_gpu_mask, 
-     const void* input, void* output, Backend* backend) {
+     const void* input, void* output, KBackend* backend) {
     const void* gate_input_ptr;
     const void* up_input_ptr;
 
@@ -209,9 +228,12 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights,
         
         // gate_proj_: [256*2048*4032] config_.hidden_size7168 * ggml_type_size(config_.up_type)144 / ggml_blck_size(config_.up_type)256 = 4032
         #ifdef USE_NUMA
-        void* gate_proj_ptr = (uint8_t*)gate_proj_numa_[Backend::numa_node] + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
+        void* gate_proj_ptr = (uint8_t*)gate_proj_numa_[KBackend::numa_node] + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
         #else
-        void* gate_proj_ptr = (uint8_t*)gate_proj_ + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
+        void* gate_proj_ptr = (uint8_t*)gate_proj_ 
+                            + (expert_id * config_.intermediate_size + ith * config_.stride) 
+                                * config_.hidden_size 
+                                * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
         #endif
 
         // 计算 gate @ input
@@ -219,7 +241,7 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights,
         llamafile_sgemm(config_.stride, 1, config_.hidden_size / ggml_blck_size(config_.gate_type), gate_proj_ptr, config_.hidden_size / ggml_blck_size(config_.gate_type), gate_input_ptr, config_.hidden_size / ggml_blck_size(config_.gate_type), gate_output_ptr, config_.stride, 0, 1, GGML_TASK_TYPE_COMPUTE, config_.gate_type, ggml_internal_get_type_traits(config_.gate_type).vec_dot_type, GGML_TYPE_F32, GGML_PREC_DEFAULT);
         // printf("====================in forward_one() after gate====================\n");
         #ifdef USE_NUMA
-        void* up_proj_ptr = (uint8_t*)up_proj_numa_[Backend::numa_node] + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
+        void* up_proj_ptr = (uint8_t*)up_proj_numa_[KBackend::numa_node] + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
         #else
         void* up_proj_ptr = (uint8_t*)up_proj_ + (expert_id * config_.intermediate_size + ith * config_.stride) * config_.hidden_size * ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
         #endif
@@ -274,7 +296,7 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights,
             }
 
             #ifdef USE_NUMA
-            void* down_proj_ptr = (uint8_t*)down_proj_numa_[Backend::numa_node] + (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
+            void* down_proj_ptr = (uint8_t*)down_proj_numa_[KBackend::numa_node] + (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
             #else
             // 定位到expert_id的down_proj_的第ith块的起始位置
             void* down_proj_ptr = (uint8_t*)down_proj_ + (expert_id * config_.hidden_size + ith * config_.stride) * config_.intermediate_size * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
@@ -314,7 +336,7 @@ forward_many总结：
 // 计算多个token，>10时
 void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float* weights, 
     const uint64_t* in_gpu_mask, 
-    const void* input, void* output, Backend* backend) {
+    const void* input, void* output, KBackend* backend) {
     // 统计每个expert的处理的token数量， 所有256个都统计，而不是只统计在expert_ids中的
     for (int i = 0; i < config_.expert_num; i++) {
         m_local_num_[i] = 0;
@@ -399,7 +421,7 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
         }
 
         #ifdef USE_NUMA
-        void* gate_proj_ptr = (uint8_t*)gate_proj_numa_[Backend::numa_node] + (expert_idx * config_.intermediate_size + ith * stride) * config_.hidden_size * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
+        void* gate_proj_ptr = (uint8_t*)gate_proj_numa_[KBackend::numa_node] + (expert_idx * config_.intermediate_size + ith * stride) * config_.hidden_size * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
         #else
         // 由于
         void* gate_proj_ptr = (uint8_t*)gate_proj_ + (expert_idx * config_.intermediate_size + ith * stride) * config_.hidden_size * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
@@ -410,7 +432,7 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
         void* up_input_ptr = m_local_up_input_ptr_[expert_idx];
 
         #ifdef USE_NUMA
-        void* up_proj_ptr = (uint8_t*)up_proj_numa_[Backend::numa_node] + (expert_idx * config_.intermediate_size + ith * stride) * config_.hidden_size * ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
+        void* up_proj_ptr = (uint8_t*)up_proj_numa_[KBackend::numa_node] + (expert_idx * config_.intermediate_size + ith * stride) * config_.hidden_size * ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
         #else
         void* up_proj_ptr = (uint8_t*)up_proj_ + (expert_idx * config_.intermediate_size + ith * stride) * config_.hidden_size * ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
         #endif
@@ -445,7 +467,7 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
         }
         
         #ifdef USE_NUMA
-        void* down_proj_ptr = (uint8_t*)down_proj_numa_[Backend::numa_node] + (expert_idx * config_.hidden_size + ith * stride) * config_.intermediate_size * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
+        void* down_proj_ptr = (uint8_t*)down_proj_numa_[KBackend::numa_node] + (expert_idx * config_.hidden_size + ith * stride) * config_.intermediate_size * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
         #else
         void* down_proj_ptr = (uint8_t*)down_proj_ + (expert_idx * config_.hidden_size + ith * stride) * config_.intermediate_size * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
         #endif
@@ -470,7 +492,7 @@ void MOE::forward_many(int qlen, int k, const uint64_t* expert_ids, const float*
 
 void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weights,
      const uint64_t* in_gpu_mask, 
-     const void* input, void* output, int* batch_size_tensor, Backend* backend) {
+     const void* input, void* output, int* batch_size_tensor, KBackend* backend) {
     // std::cout<< "MoE.forward() thread id:" <<std::this_thread::get_id() << std::endl;
     qlen = batch_size_tensor[0]; // qlen = batch_size * seq_len
     if (qlen < config_.group_min_len) {
@@ -502,4 +524,146 @@ void MOE::forward(int qlen, int k, const uint64_t* expert_ids, const float* weig
         (uint8_t*)output + forward_len * config_.hidden_size * ggml_type_size(config_.hidden_type) / ggml_blck_size(config_.hidden_type), 
         batch_size_tensor, 
         backend);
+}
+
+
+
+int* MOE::replaceArray(const uint64_t* a, const uint64_t* b, int length) {
+    // std::cout<< "MoE.replaceArray thread id:" <<std::this_thread::get_id() << std::endl;
+    std::unordered_set<int> setA, setB;
+
+    for (int i = 0; i < length; i++) {
+        setA.insert(a[i]);
+        setB.insert(b[i]);
+    }
+
+    // 求交集
+    std::unordered_set<int> inter;
+    for (int i = 0; i < length; i++) {
+        if (setB.count(a[i])) {
+            inter.insert(a[i]);
+        }
+    }
+
+    // 提取 b 中的非交集元素
+    int* b_extra = new int[length];
+    int extraCount = 0;
+    for (int i = 0; i < length; i++) {
+        if (!inter.count(b[i])) {
+            b_extra[extraCount++] = b[i];
+        }
+    }
+
+    // 生成结果数组
+    int* result = new int[length];
+    int idx = 0;
+    for (int i = 0; i < length; i++) {
+        if (inter.count(a[i])) {
+            result[i] = a[i];  // 保持交集元素不变
+        } else {
+            result[i] = b_extra[idx++]; // 替换
+        }
+    }
+
+    delete[] b_extra; // 释放临时数组
+    return result;
+}
+
+void MOE::prefetch(
+        int prefetch_num,
+        int cache_num,
+        const void* input_tensor,
+        const uint64_t* expert_ids,
+        const uint64_t* pred_expert,
+        uint64_t* cached_expert,
+        uint64_t* up_slots,    // len = cache_num
+        uint64_t* gate_slots,  // len = cache_num
+        uint64_t* down_slots,  // len = cache_num
+        int* cache_ready,
+        uint64_t stream_ptr
+    ){
+        // 计算新的 cache 排列（保持交集原位，其他替换为 pred 里新的）
+        std::unique_ptr<int[]> new_cache(replaceArray(cached_expert, pred_expert, cache_num));
+        cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+
+        int replace_num = 0;
+        for(int i=0; i<cache_num; i++){
+            // 完成cache的更新
+            if(new_cache[i] != cached_expert[i]){
+                if (replace_num >= prefetch_num) break;
+
+                int new_expert_id = new_cache[i];
+                load_ggml_expert_from_weights_c(new_expert_id, up_slots[i], gate_slots[i], down_slots[i], stream_ptr);
+                cached_expert[i] = new_expert_id;
+                replace_num++;
+            }
+        }
+
+        // delete[] new_cache;
+        cudaError_t err;
+        err = cudaStreamSynchronize(stream);
+        if(cache_ready) {
+            *cache_ready = 1;
+        }
+        // printf("prefetch done, cache_ready=%d\n", cache_ready[0]);
+    }
+
+void MOE::load_ggml_expert_from_weights_c(
+    int expert_id,
+    uint64_t up_dst_ptr_val,
+    uint64_t gate_dst_ptr_val,
+    uint64_t down_dst_ptr_val,
+    uint64_t stream_ptr
+){
+    // printf("in load_ggml_expert_from_weights_c!!!!!!!\n");
+    // printf("\nexpert_id=%d\n", expert_id);
+    size_t offset_gate = (size_t)expert_id
+                * (size_t)config_.intermediate_size
+                * (size_t)config_.hidden_size
+                * (size_t)ggml_type_size(config_.up_type)
+                / (size_t)ggml_blck_size(config_.up_type);
+    void* gate_proj_ptr = (uint8_t*)gate_proj_ + offset_gate;
+
+    size_t offset_up = (size_t)expert_id
+                * (size_t)config_.intermediate_size
+                * (size_t)config_.hidden_size
+                * (size_t)ggml_type_size(config_.up_type)
+                / (size_t)ggml_blck_size(config_.up_type);
+    void* up_proj_ptr = (uint8_t*)up_proj_ + offset_up;
+
+    size_t offset_down = (size_t)expert_id
+                * (size_t)config_.hidden_size
+                * (size_t)config_.intermediate_size
+                * (size_t)ggml_type_size(config_.down_type)
+                / (size_t)ggml_blck_size(config_.down_type);
+    void* down_proj_ptr = (uint8_t*)down_proj_ + offset_down;
+
+
+    // 可选：初始化数据，例如 memcpy 原始数据到 pinned 内存
+    memcpy(up_proj_pinned, up_proj_ptr, up_nbytes);
+    memcpy(gate_proj_pinned, gate_proj_ptr, gate_nbytes);
+    memcpy(down_proj_pinned, down_proj_ptr, down_nbytes);
+
+    void* up_dst_ptr   = reinterpret_cast<void*>(up_dst_ptr_val);
+    void* gate_dst_ptr = reinterpret_cast<void*>(gate_dst_ptr_val);
+    void* down_dst_ptr = reinterpret_cast<void*>(down_dst_ptr_val);
+
+    // 将整数转换回 CUDAStream
+    cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+    
+    cudaError_t err;
+    err = cudaMemcpyAsync(up_dst_ptr,   up_proj_pinned,   up_nbytes,   cudaMemcpyHostToDevice,   stream);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Memcpy up failed: %s\n", cudaGetErrorString(err));
+    }
+
+    err = cudaMemcpyAsync(gate_dst_ptr, gate_proj_pinned, gate_nbytes, cudaMemcpyHostToDevice, stream);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Memcpy gate failed: %s\n", cudaGetErrorString(err));
+    }
+
+    err = cudaMemcpyAsync(down_dst_ptr, down_proj_pinned, down_nbytes, cudaMemcpyHostToDevice, stream);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "Memcpy down failed: %s\n", cudaGetErrorString(err));
+    }
 }

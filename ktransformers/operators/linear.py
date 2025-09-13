@@ -747,14 +747,14 @@ class SLinear(nn.Module):
         # assert self.device == parameter_tensor.device, f"self.device is: {self.device}, but parameter_tensor is in {parameter_tensor.device}"
         # assert parameter_tensor.shape == (self.hidden_size, self.intermediate_size), f"Expected shape ({self.hidden_size}, {self.intermediate_size}), but got {parameter_tensor.shape}"
 
-        # self.parameter_quantized = parameter_tensor
-        if self.parameter_quantized is None:
-            # print(f"loaddddddddddddding, {self.parameter_quantized}")
-            self.parameter_quantized = parameter_tensor.to(self.device)
-            # print(f"{self.parameter_quantized}")
-        else:
-            self.parameter_quantized.copy_(parameter_tensor.to(self.device), non_blocking=True)
-        return
+        self.parameter_quantized = parameter_tensor
+        # if self.parameter_quantized is None:
+        #     # print(f"loaddddddddddddding, {self.parameter_quantized}")
+        #     self.parameter_quantized = parameter_tensor.to(self.device)
+        #     # print(f"{self.parameter_quantized}")
+        # else:
+        #     self.parameter_quantized = parameter_tensor
+        
     def print_is_none(self):
         print(f"parameter_quantized is None: {self.parameter_quantized is None}")
 
@@ -777,58 +777,6 @@ class SLinear(nn.Module):
         # 解量化后即释放
         del parameter_dequantized
         return output
-
-        # marlin 
-        # parameter_dequantized = parameter_dequantized.T
-        # # print(f"padding:{self.padding}")
-        # if self.padding:
-        #     padded_weight = torch.zeros(self.in_features, self.out_features, device=self.device)
-        #     padded_weight[:self.orin_in_features, :self.orin_out_features] = parameter_dequantized
-        #     parameter_dequantized = padded_weight
-        # # Pack Marlin linear
-        # marlin_q_w, marlin_s, g_idx, sort_indices, _ = marlin_quantize(
-        #     parameter_dequantized, self.num_bits, self.group_size, self.act_order
-        # )
-        # self.workspace = MarlinWorkspace(
-        #     self.out_features, GPTQ_MARLIN_MIN_THREAD_N, GPTQ_MARLIN_MAX_PARALLEL,self.device
-        # )
-
-        # x = x.to(self.device)
-        # orig_shape = list(x.shape)
-        # orig_dtype = x.dtype
-        # x = x.reshape(-1, orig_shape[-1])
-        # x = x.reshape(-1, x.shape[-1])
-        # if self.padding:
-        #     padding_input=torch.empty(x.shape[0], self.in_features, device=x.device, dtype=x.dtype)
-        #     padding_input[:,:self.orin_in_features] = x
-        #     x = padding_input
-        # marlin_s = marlin_s.to(x.dtype)
-        # x = KTransformersOps.gptq_marlin_gemm(
-        #     x,
-        #     marlin_q_w,
-        #     marlin_s,
-        #     g_idx,
-        #     sort_indices,
-        #     self.workspace.scratch,
-        #     self.num_bits,
-        #     x.shape[0],
-        #     self.n,
-        #     x.shape[-1],
-        #     self.is_k_full,
-        # )
-        # if self.padding:
-        #     x = x[:,:self.orin_out_features]
-        #     orig_shape[-1] = self.orin_out_features
-        # else:
-        #     orig_shape[-1] = self.out_features
-        # del parameter_dequantized
-        # return x.reshape(orig_shape).to(orig_dtype)
-        
-        
-        
-
-        
-        
 
     def unload(self):
         self.parameter_quantized = None

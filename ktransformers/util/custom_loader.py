@@ -8,8 +8,8 @@ from typing import Sequence
 import os
 from enum import IntEnum
 import torch
-if not torch.xpu.is_available():
-    import KTransformersOps
+# if not torch.xpu.is_available():
+#     import KTransformersOps
 from safetensors import safe_open
 from ktransformers.ktransformers_ext.triton.fp8gemm import fp8_gemm, act_quant, weight_dequant
 from ktransformers.util.custom_gguf import *
@@ -389,6 +389,15 @@ class GGUFLoader(ModelLoader):
         ggml_type = t["ggml_type"]
         data = torch.from_numpy(data)
         return data, ggml_type
+
+    def get_expert_ggml_size(self, name):
+        name = translate_name_to_gguf(name)
+        t = self.tensor_info[name]
+        ggml_type = t["ggml_type"]
+        if ggml_type not in GGML_NAMES:
+            raise NotImplementedError(f"ggml_type {ggml_type} not implemented")
+        ggml_name = GGML_NAMES[ggml_type]
+        return GGML_BLOCK_SIZES[ggml_name] * (t["shape"][0] // GGML_ELEMENTS_PER_BLOCK[ggml_name])
 
     def load_expert_tensor(self, name, data, expert_id, elements_per_expert, device = "cuda", target_dtype = torch.get_default_dtype())->torch.Tensor:
         name = translate_name_to_gguf(name)

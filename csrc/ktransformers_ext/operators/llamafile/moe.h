@@ -15,6 +15,7 @@
 #include <functional>
 #include <mutex>
 #include <vector>
+#include <unordered_set>
 
 #include "../../cpu_backend/backend.h"
 #include "../../cpu_backend/shared_mem_buffer.h"
@@ -40,6 +41,8 @@ struct MOEConfig {
     ggml_type down_type;
     ggml_type hidden_type;
 
+
+
     MOEConfig() {}
 
     MOEConfig(int expert_num, int routed_expert_num, int hidden_size, int intermediate_size, int stride, int group_min_len, int group_max_len, void* gate_proj, void* up_proj, void* down_proj, ggml_type gate_type, ggml_type up_type, ggml_type down_type, ggml_type hidden_type)
@@ -50,12 +53,12 @@ class MOE {
    public:
     MOE(MOEConfig);
     ~MOE();
-    void warm_up(Backend* backend);
+    void warm_up(KBackend* backend);
     void forward_one(int k, const uint64_t* expert_ids, const float* weights, 
         const uint64_t* in_gpu_mask, 
         const void* input, 
         void* output, 
-        Backend* backend);
+        KBackend* backend);
     void forward_many(int qlen, 
         int k, 
         const uint64_t* expert_ids, 
@@ -63,7 +66,7 @@ class MOE {
         const uint64_t* in_gpu_mask, 
         const void* input, 
         void* output, 
-        Backend* backend);
+        KBackend* backend);
     void forward(int qlen, 
         int k, 
         const uint64_t* expert_ids, 
@@ -72,11 +75,32 @@ class MOE {
         const void* input, 
         void* output, 
         int* batch_size_tensor, 
-        Backend* backend);
+        KBackend* backend);
     
-    // for cache
-    // void forward_with_cache(int qlen, int k, int layer_id, const uint64_t* cached_experts, const uint64_t* predicted_experts, const uint64_t* expert_ids, const float* weights, const void* input, void* output, int* batch_size_tensor, Backend* backend);
+    void prefetch(
+        int prefetch_num,
+        int cache_num,
+        const void* input_tensor,
+        const uint64_t* expert_ids,
+        const uint64_t* pred_expert,
+        uint64_t* cached_expert,
+        uint64_t* up_slots,    // len = cache_num
+        uint64_t* gate_slots,  // len = cache_num
+        uint64_t* down_slots,  // len = cache_num
+        int* cache_ready,
+        uint64_t stream
+    );
 
+    int* replaceArray(const uint64_t* a, const uint64_t* b, int length);
+    
+    void load_ggml_expert_from_weights_c(
+        int expert_id,
+        uint64_t up_dst_ptr_val,
+        uint64_t gate_dst_ptr_val,
+        uint64_t down_dst_ptr_val,
+        uint64_t stream
+    );
+    
 
    private:
     MOEConfig config_;
@@ -121,6 +145,29 @@ class MOE {
     std::vector<float*> m_local_intermediate_fp32_ptr_;  // [expert_num]
     std::vector<uint8_t*> m_local_down_input_ptr_;       // [expert_num]
     std::vector<float*> m_local_down_output_ptr_;        // [expert_num]
+
+    inline size_t up_bytes() const {
+        // (hidden * inter) * (type_size / blck_size)
+        return (size_t)config_.hidden_size * (size_t)config_.intermediate_size
+             * ggml_type_size(config_.up_type) / ggml_blck_size(config_.up_type);
+    }
+    inline size_t gate_bytes() const {
+        return (size_t)config_.hidden_size * (size_t)config_.intermediate_size
+             * ggml_type_size(config_.gate_type) / ggml_blck_size(config_.gate_type);
+    }
+    inline size_t down_bytes() const {
+        // 注意 down 形状反过来 (inter * hidden)
+        return (size_t)config_.intermediate_size * (size_t)config_.hidden_size
+             * ggml_type_size(config_.down_type) / ggml_blck_size(config_.down_type);
+    }
+
+    size_t gate_nbytes = 0;
+    size_t up_nbytes   = 0;
+    size_t down_nbytes = 0;
+
+    void* up_proj_pinned   = nullptr;
+    void* gate_proj_pinned = nullptr;
+    void* down_proj_pinned = nullptr;
 };
 
 #endif
