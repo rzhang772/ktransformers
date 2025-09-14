@@ -20,9 +20,6 @@ import sys, os
 from ktransformers.operators.base_operator import BaseInjectedModule
 from tqdm import tqdm
 import nvtx
-import queue
-import threading
-import time
 
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build"))
 sys.path.append(os.path.join(os.path.dirname(__file__), "..", "ktransformers_ext", "build", "Release"))
@@ -212,6 +209,8 @@ class KExpertsCPU(KExpertsBase):
         # print(f"just initialized: {self.prefetch_event.query()}")
         self.layer_id = KExpertsCPU.layer_counter
         KExpertsCPU.layer_counter += 1
+        self.expert_frequency = torch.zeros(256, dtype=torch.int64, device='cpu')
+        
 
         self.predictor_path = f"/mnt/incontainer/shared_rui/predictors/top8_alldataset_singleLinear_B32/layer_{self.layer_id}/best_model_layer_{self.layer_id}.pth"
         self.predictor = TopkPredictor(input_dim=7168, expert_num=256).to_empty(device=self.gpu_device)
@@ -251,31 +250,31 @@ class KExpertsCPU(KExpertsBase):
         self.up_slots_ptr   = torch.tensor([slot.data_ptr() for slot in self.up_slots], dtype=torch.uint64, device=self.cpu_device)
         self.gate_slots_ptr = torch.tensor([slot.data_ptr() for slot in self.gate_slots], dtype=torch.uint64, device=self.cpu_device)
         self.down_slots_ptr = torch.tensor([slot.data_ptr() for slot in self.down_slots], dtype=torch.uint64, device=self.cpu_device)
-        # SMOE: expert cache load parameters
-        for i in range(self.cached_experts_num):
-            up = self.gguf_loader.load_ggml_expert_from_weights(self.up, i, self.elements_per_expert, self.up_type)
-            # print(f"up dtype: {up.dtype}, shape: {up.shape}")
-            # up = up.to(self.gpu_device)
-            gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, i, self.elements_per_expert, self.gate_type)
-            # gate = gate.to(self.gpu_device)
-            down = self.gguf_loader.load_ggml_expert_from_weights(self.down, i, self.elements_per_expert, self.down_type)
-            # down = down.to(self.gpu_device)
+        # # SMOE: expert cache load parameters
+        # for i in range(self.cached_experts_num):
+        #     up = self.gguf_loader.load_ggml_expert_from_weights(self.up, i, self.elements_per_expert, self.up_type)
+        #     # print(f"up dtype: {up.dtype}, shape: {up.shape}")
+        #     # up = up.to(self.gpu_device)
+        #     gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, i, self.elements_per_expert, self.gate_type)
+        #     # gate = gate.to(self.gpu_device)
+        #     down = self.gguf_loader.load_ggml_expert_from_weights(self.down, i, self.elements_per_expert, self.down_type)
+        #     # down = down.to(self.gpu_device)
 
-            # self.cached_experts["up_projs"][i].load(up)
-            # self.cached_experts["gate_projs"][i].load(gate)
-            # self.cached_experts["down_projs"][i].load(down)
+        #     # self.cached_experts["up_projs"][i].load(up)
+        #     # self.cached_experts["gate_projs"][i].load(gate)
+        #     # self.cached_experts["down_projs"][i].load(down)
 
-            self.up_slots[i].copy_(up)
-            self.gate_slots[i].copy_(gate)
-            self.down_slots[i].copy_(down)
+        #     self.up_slots[i].copy_(up)
+        #     self.gate_slots[i].copy_(gate)
+        #     self.down_slots[i].copy_(down)
 
-            self.cached_experts["up_projs"][i].load(self.up_slots[i])
-            self.cached_experts["gate_projs"][i].load(self.gate_slots[i])
-            self.cached_experts["down_projs"][i].load(self.down_slots[i])
-        self.cached_experts_ids = torch.arange(0, self.cached_experts_num, device=self.cpu_device, dtype=torch.long)
-        self.cache_ready[0] = 1
+        #     self.cached_experts["up_projs"][i].load(self.up_slots[i])
+        #     self.cached_experts["gate_projs"][i].load(self.gate_slots[i])
+        #     self.cached_experts["down_projs"][i].load(self.down_slots[i])
+        # self.cached_experts_ids = torch.arange(0, self.cached_experts_num, device=self.cpu_device, dtype=torch.long)
+        # self.cache_ready[0] = 1
         
-        print(f"==++++++++++++>>>>. {self.key}: Expert cache initialized")
+        # print(f"==++++++++++++>>>>. {self.key}: Expert cache initialized")
 
 
         # print(self.gate_qtype, self.up_qtype, self.down_qtype)
@@ -476,12 +475,9 @@ class KExpertsCPU(KExpertsBase):
         else:
             print_layer = 2
             if mode == "decode":
-                # print(f"python up slots ptrs: {self.up_slots_ptr}")
+                # if token_idx == 1:    
+                    
                 gpu_compute = True
-                # print(f"decode layer {self.layer_id}")
-                # print(f"up shape: {self.up.shape}")
-                # print(f"expert_ids: {expert_ids}, weights: {weights}")
-                # in_gpu_mask: multihot mask from cached_expert_ids, type: list, shape:(n_routed_experts,)
                 in_gpu_mask = torch.zeros(self.n_routed_experts, dtype=torch.int64, device=self.cpu_device)
                 if gpu_compute:
                     for i in range(self.cached_experts_num):
@@ -584,6 +580,7 @@ class KExpertsCPU(KExpertsBase):
                     all_vals = torch.arange(256)
                     perm = all_vals[torch.randperm(256)]
                     self.predicted_experts_cpu = perm[:8]
+                    
 
                 # if self.layer_id == self.print_layer:
                     # print(f"\nToken {token_idx}, layer {self.layer_id}, cached: {self.cached_experts_ids}, compute GPU experts: {expert_ids}, hited: {hn}, rate: {hn_rate}, pred_expert: {self.predicted_experts_cpu}, ")
@@ -615,6 +612,39 @@ class KExpertsCPU(KExpertsBase):
                 return output
             else:
                 # non-generate mode, compute experts on CPU
+                flat_idx = expert_ids.view(-1)
+                batch_count = torch.bincount(flat_idx, minlength=256)
+                self.expert_frequency += batch_count.cpu()
+                # 初始化expert_cache
+                top8_experts = torch.topk(self.expert_frequency, self.cached_experts_num).indices.to(self.cpu_device)
+                
+                # SMOE: expert cache load parameters
+                for i in range(self.cached_experts_num):
+                    up = self.gguf_loader.load_ggml_expert_from_weights(self.up, top8_experts[i], self.elements_per_expert, self.up_type)
+                    # print(f"up dtype: {up.dtype}, shape: {up.shape}")
+                    # up = up.to(self.gpu_device)
+                    gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, top8_experts[i], self.elements_per_expert, self.gate_type)
+                    # gate = gate.to(self.gpu_device)
+                    down = self.gguf_loader.load_ggml_expert_from_weights(self.down, top8_experts[i], self.elements_per_expert, self.down_type)
+                    # down = down.to(self.gpu_device)
+
+                    # self.cached_experts["up_projs"][i].load(up)
+                    # self.cached_experts["gate_projs"][i].load(gate)
+                    # self.cached_experts["down_projs"][i].load(down)
+
+                    self.up_slots[i].copy_(up)
+                    self.gate_slots[i].copy_(gate)
+                    self.down_slots[i].copy_(down)
+
+                    self.cached_experts["up_projs"][i].load(self.up_slots[i])
+                    self.cached_experts["gate_projs"][i].load(self.gate_slots[i])
+                    self.cached_experts["down_projs"][i].load(self.down_slots[i])
+                self.cached_experts_ids = top8_experts.view(-1)
+                self.cache_ready[0] = 1
+                
+                print(f"==++++++++++++>>>>. {self.key}: Expert cache initialized")
+                
+
                 in_gpu_mask = torch.zeros(self.n_routed_experts, dtype=torch.int64, device=self.cpu_device)
                 input_tensor = input_tensor.contiguous().cpu()
                 expert_ids = expert_ids.contiguous().cpu()
@@ -633,6 +663,8 @@ class KExpertsCPU(KExpertsBase):
                 self.cpu_infer.sync()
                 output = output.to(device=object.__getattribute__(self, "out_device")).view(identity.shape)
                 output += y_
+
+                
                 return output
             # return output.to(device=object.__getattribute__(self, "out_device"))
             # in_gpu_mask = torch.zeros(self.n_routed_experts, dtype=torch.int64, device=self.cpu_device)
@@ -1459,6 +1491,7 @@ class KDeepseekV3MoE(BaseInjectedModule, DeepseekV3MoE):
         super().__init__(*args, **kwargs)
         self.layer_id = KDeepseekV3MoE.layer_counter
         KDeepseekV3MoE.layer_counter += 1
+        
     
     def record_topk_idx(self, prompt_name, mode, token_idx, layer_idx, topk_idx, hidden_states):
         import json
