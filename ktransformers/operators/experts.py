@@ -552,7 +552,8 @@ class KExpertsCPU(KExpertsBase):
                     # gpu_output = self.compute_gpu_experts(identity, expert_ids, weights)
                     
                     gpu_output = self.compute_gpu_experts_one(identity, expert_ids, weights)
-                    self.cache_ready[0] = 0
+                    if Config().prefetch_num >= 0:
+                        self.cache_ready[0] = 0
                 
 
                 
@@ -570,7 +571,7 @@ class KExpertsCPU(KExpertsBase):
                         y[i][y_idx_batch[i]] = 1.0
                     return y
                 
-                if Config().prefetch_num > 0:
+                if Config().prefetch_num >= 0:
                     with torch.no_grad():
                         self.predictor = self.predictor.to(self.gpu_device)
                         expert_ids_gpu = expert_ids.to(self.gpu_device)  # 确保expert_ids在GPU上
@@ -605,8 +606,8 @@ class KExpertsCPU(KExpertsBase):
                                                     KExpertsCPU.prefetch_stream.cuda_stream, # prefetch stream
                                                 )
                                             )
-
-                sub_prefetch()
+                if Config().prefetch_num >= 0:
+                    sub_prefetch()
                 # get final output
                 output += y_
                 if gpu_compute:
