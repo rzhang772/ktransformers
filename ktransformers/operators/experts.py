@@ -570,48 +570,29 @@ class KExpertsCPU(KExpertsBase):
                         y[i][y_idx_batch[i]] = 1.0
                     return y
                 
-                with torch.no_grad():
-                    self.predictor = self.predictor.to(self.gpu_device)
-                    expert_ids_gpu = expert_ids.to(self.gpu_device)  # 确保expert_ids在GPU上
-                    # expert_mask = batch_multihot_encode(expert_ids_gpu).to(self.gpu_device)  # shape [batch_size, expert_num]
-                    expert_mask = torch.zeros((expert_ids_gpu.size(0), self.n_routed_experts), device=self.gpu_device)
-                    predicted_experts, probs = self.predictor.predict(identity.reshape(-1, identity.shape[2]), expert_mask=expert_mask)
-                    self.predicted_experts_cpu = predicted_experts.to(self.cpu_device).view(-1)
-
-                # 生成 0~255 的整数序列
-                # all_vals = torch.arange(256)
-                # perm = all_vals[torch.randperm(256)]
-                # self.predicted_experts_cpu = perm[:8]
+                if Config().prefetch_num > 0:
+                    with torch.no_grad():
+                        self.predictor = self.predictor.to(self.gpu_device)
+                        expert_ids_gpu = expert_ids.to(self.gpu_device)  # 确保expert_ids在GPU上
+                        # expert_mask = batch_multihot_encode(expert_ids_gpu).to(self.gpu_device)  # shape [batch_size, expert_num]
+                        expert_mask = torch.zeros((expert_ids_gpu.size(0), self.n_routed_experts), device=self.gpu_device)
+                        predicted_experts, probs = self.predictor.predict(identity.reshape(-1, identity.shape[2]), expert_mask=expert_mask)
+                        self.predicted_experts_cpu = predicted_experts.to(self.cpu_device).view(-1)
+                else:
+                    # 生成 0~255 的整数序列
+                    all_vals = torch.arange(256)
+                    perm = all_vals[torch.randperm(256)]
+                    self.predicted_experts_cpu = perm[:8]
 
                 # if self.layer_id == self.print_layer:
                     # print(f"\nToken {token_idx}, layer {self.layer_id}, cached: {self.cached_experts_ids}, compute GPU experts: {expert_ids}, hited: {hn}, rate: {hn_rate}, pred_expert: {self.predicted_experts_cpu}, ")
                     # print(f"python up slots ptrs: {self.up_slots_ptr}")
-                # predicted_flat = predicted_experts.flatten()
-                # print(f"pred shape: {self.predicted_experts_cpu.shape}, predicted_experts: {self.predicted_experts_cpu}, dtype: {self.predicted_experts_cpu.dtype}, is_contiguous: {self.predicted_experts_cpu.is_contiguous()}, device: {self.predicted_experts_cpu.device}")
-                
-                prefetch_num = 2 # 每次prefetch的expert的最大数量
-
-                # print(type(self.cpu_infer))
-                # print(self.cpu_infer.__class__.__module__)
-                # print(dir(self.cpu_infer))
-                # print(f"cached: {self.cached_experts_ids.shape}, dtype {self.cached_experts_ids.dtype}")
-                # print(f"expert_ids: {expert_ids.shape}, dtype {expert_ids.dtype}, is_contiguous: {expert_ids.is_contiguous()}")
-                # print(f"self.up_slots[0].nbytes: {self.up_slots[0].nbytes}")
-                # print(f"self.gate_slots30].nbytes: {self.gate_slots[0].nbytes}")
-                # print(f"self.down_slots[0].nbytes: {self.down_slots[0].nbytes}")
-                # print(f"python prefetch stream ptr: {KExpertsCPU.prefetch_stream.cuda_stream:#x}")
-
-                # for ii in range(self.cached_experts_num):
-                #     print(f"{ii}th up slots ptr: {self.up_slots_ptr[ii]:#x}")
-                #     print(f"{ii}th gate slots ptr: {self.gate_slots_ptr[ii]:#x}")
-                #     print(f"{ii}th down slots ptr: {self.down_slots_ptr[ii]:#x}")
-                # print()
                 
                 @nvtx.annotate("KExpertsCPU.prefetch", color="blue")
                 def sub_prefetch():
                     self.cpu_infer.submit_prefetch(
                                                 self.moe.prefetch(
-                                                    prefetch_num,
+                                                    Config().prefetch_num,
                                                     self.cached_experts_num,
                                                     input_tensor.data_ptr(), # 当前层的激活值，位于GPU上的tensor，暂时用不到
                                                     expert_ids.data_ptr(), # 当前层激活的专家的id, 暂时用不到

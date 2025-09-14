@@ -35,7 +35,6 @@ from ktransformers.util.utils import prefill_and_generate, get_compute_capabilit
 from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.util.vendors import device_manager, get_device, to_device, GPUVendor
-from ktransformers.operators.experts import KExpertsCPU
 custom_models = {
     "DeepseekV2ForCausalLM": DeepseekV2ForCausalLM,
     "DeepseekV3ForCausalLM": DeepseekV3ForCausalLM,
@@ -62,6 +61,7 @@ def local_chat(
     gguf_path: str | None = None,
     max_new_tokens: int = 1000,
     cpu_infer: int = Config().cpu_infer,
+    prefetch_num: int = Config().prefetch_num,
     use_cuda_graph: bool = True,
     prompt_file : str | None = None,
     mode: str = "normal",
@@ -73,6 +73,7 @@ def local_chat(
     torch.set_grad_enabled(False)
 
     Config().cpu_infer = cpu_infer # not work, because cpuinfer is build in the import stage, must set before import
+    Config().prefetch_num = prefetch_num
     # print(f"cpu_infer: {Config().cpu_infer}")
     if torch.xpu.is_available():
         use_cuda_graph = False

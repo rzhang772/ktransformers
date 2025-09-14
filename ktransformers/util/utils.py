@@ -123,7 +123,7 @@ def load_cur_state_dict(module: nn.Module, gguf_loader: ModelLoader, prefix: str
         if gguf_loader.has_tensor(translated_key):
             target_dtype = torch.get_default_dtype()
             device = get_device(translated_key[:translated_key.rfind(".")], gguf_loader.tensor_device_map)
-            print(f"loading {translated_key} to {device}")
+            # print(f"loading {translated_key} to {device}")
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
             elif torch.xpu.is_available():
