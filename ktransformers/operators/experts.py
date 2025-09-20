@@ -475,7 +475,10 @@ class KExpertsCPU(KExpertsBase):
         else:
             print_layer = 2
             if mode == "decode":
-                # if token_idx == 1:    
+                # 更新expert频率
+                # for i in range(expert_ids.size(0)):
+                #     for j in range(expert_ids.size(1)):
+                #         self.expert_frequency[expert_ids[i][j]] += 1    
                     
                 gpu_compute = True
                 in_gpu_mask = torch.zeros(self.n_routed_experts, dtype=torch.int64, device=self.cpu_device)
@@ -583,17 +586,18 @@ class KExpertsCPU(KExpertsBase):
                     
 
                 # if self.layer_id == self.print_layer:
-                    # print(f"\nToken {token_idx}, layer {self.layer_id}, cached: {self.cached_experts_ids}, compute GPU experts: {expert_ids}, hited: {hn}, rate: {hn_rate}, pred_expert: {self.predicted_experts_cpu}, ")
+                #     print(f"\nToken {token_idx}, layer {self.layer_id}, cached: {self.cached_experts_ids}, compute GPU experts: {expert_ids}, hited: {hn}, rate: {hn_rate}, pred_expert: {self.predicted_experts_cpu}, ")
                     # print(f"python up slots ptrs: {self.up_slots_ptr}")
                 
                 @nvtx.annotate("KExpertsCPU.prefetch", color="blue")
                 def sub_prefetch():
                     self.cpu_infer.submit_prefetch(
                                                 self.moe.prefetch(
+                                                    0,
                                                     Config().prefetch_num,
                                                     self.cached_experts_num,
-                                                    input_tensor.data_ptr(), # 当前层的激活值，位于GPU上的tensor，暂时用不到
-                                                    expert_ids.data_ptr(), # 当前层激活的专家的id, 暂时用不到
+                                                    self.cached_experts_num,
+                                                    self.expert_frequency.data_ptr(), # expert频次统计
                                                     self.predicted_experts_cpu.data_ptr(), # 新预测的expert的id
                                                     self.cached_experts_ids.data_ptr(), # 当前cache的expert的id
                                                     self.up_slots_ptr.data_ptr(), # up weight buffer

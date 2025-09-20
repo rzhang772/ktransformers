@@ -78,10 +78,11 @@ class MOE {
         KBackend* backend);
     
     void prefetch(
+        int update_policy, // 0: v1, 1: v2
         int prefetch_num,
         int cache_num,
-        const void* input_tensor,
-        const uint64_t* expert_ids,
+        int pred_num,
+        const uint64_t* expert_frequency, // expert频次统计
         const uint64_t* pred_expert,
         uint64_t* cached_expert,
         uint64_t* up_slots,    // len = cache_num
@@ -92,6 +93,12 @@ class MOE {
     );
 
     int* replaceArray(const uint64_t* a, const uint64_t* b, int length);
+    int* get_new_cache_ids_v1(const uint64_t* cached_expert, const uint64_t* pred_expert,
+                          const uint64_t* expert_frequency, int cache_num,
+                          int pred_num, int prefetch_num);
+    int* get_new_cache_ids_v2(const uint64_t* cached_expert, const uint64_t* pred_expert,
+                          const uint64_t* expert_frequency, int cache_num,
+                          int pred_num, int prefetch_num);
     
     void load_ggml_expert_from_weights_c(
         int expert_id,

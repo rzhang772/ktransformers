@@ -13,6 +13,9 @@
 #include <cassert>
 #include <thread>
 #include <cuda_runtime.h>
+#include <vector>
+#include <algorithm>
+#include <unordered_set>
 
 #ifdef USE_NUMA
 #include <numa.h>
@@ -570,10 +573,11 @@ int* MOE::replaceArray(const uint64_t* a, const uint64_t* b, int length) {
 }
 
 void MOE::prefetch(
+        int update_policy,
         int prefetch_num,
         int cache_num,
-        const void* input_tensor,
-        const uint64_t* expert_ids,
+        int pred_num,
+        const uint64_t* expert_frequency,
         const uint64_t* pred_expert,
         uint64_t* cached_expert,
         uint64_t* up_slots,    // len = cache_num
@@ -583,7 +587,16 @@ void MOE::prefetch(
         uint64_t stream_ptr
     ){
         // 计算新的 cache 排列（保持交集原位，其他替换为 pred 里新的）
-        std::unique_ptr<int[]> new_cache(replaceArray(cached_expert, pred_expert, cache_num));
+        std::unique_ptr<int[]> new_cache;
+
+        if(update_policy == 0){
+            new_cache.reset(get_new_cache_ids_v1(cached_expert, pred_expert, expert_frequency,
+                                                cache_num, pred_num, prefetch_num));
+        }else{
+            new_cache.reset(get_new_cache_ids_v2(cached_expert, pred_expert, expert_frequency,
+                                                cache_num, pred_num, prefetch_num));
+        }
+        
         cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_ptr);
 
         int replace_num = 0;
@@ -615,6 +628,21 @@ void MOE::load_ggml_expert_from_weights_c(
     uint64_t down_dst_ptr_val,
     uint64_t stream_ptr
 ){
+
+    // 将整数转回指针
+    void* up_dst_ptr   = reinterpret_cast<void*>(up_dst_ptr_val);
+    void* gate_dst_ptr = reinterpret_cast<void*>(gate_dst_ptr_val);
+    void* down_dst_ptr = reinterpret_cast<void*>(down_dst_ptr_val);
+    cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+
+    // ==== 指针有效性检查 ====
+    if (!up_proj_ || !gate_proj_ || !down_proj_ ||
+        !up_proj_pinned || !gate_proj_pinned || !down_proj_pinned ||
+        !up_dst_ptr || !gate_dst_ptr || !down_dst_ptr || !stream) 
+    {
+        fprintf(stderr, "[Warning] load_ggml_expert_from_weights_c: invalid pointer detected, skip expert_id=%d\n", expert_id);
+        return;
+    }
     // printf("in load_ggml_expert_from_weights_c!!!!!!!\n");
     // printf("\nexpert_id=%d\n", expert_id);
     size_t offset_gate = (size_t)expert_id
@@ -644,12 +672,12 @@ void MOE::load_ggml_expert_from_weights_c(
     memcpy(gate_proj_pinned, gate_proj_ptr, gate_nbytes);
     memcpy(down_proj_pinned, down_proj_ptr, down_nbytes);
 
-    void* up_dst_ptr   = reinterpret_cast<void*>(up_dst_ptr_val);
-    void* gate_dst_ptr = reinterpret_cast<void*>(gate_dst_ptr_val);
-    void* down_dst_ptr = reinterpret_cast<void*>(down_dst_ptr_val);
+    // void* up_dst_ptr   = reinterpret_cast<void*>(up_dst_ptr_val);
+    // void* gate_dst_ptr = reinterpret_cast<void*>(gate_dst_ptr_val);
+    // void* down_dst_ptr = reinterpret_cast<void*>(down_dst_ptr_val);
 
     // 将整数转换回 CUDAStream
-    cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_ptr);
+    // cudaStream_t stream = reinterpret_cast<cudaStream_t>(stream_ptr);
     
     cudaError_t err;
     err = cudaMemcpyAsync(up_dst_ptr,   up_proj_pinned,   up_nbytes,   cudaMemcpyHostToDevice,   stream);
@@ -666,4 +694,103 @@ void MOE::load_ggml_expert_from_weights_c(
     if (err != cudaSuccess) {
         fprintf(stderr, "Memcpy down failed: %s\n", cudaGetErrorString(err));
     }
+}
+
+
+
+
+// 非重复元素中的前prefetch_num个替换掉cache中频率最低的prefetch_num个，固定会替换prefetch_num个，如果足够的话。假设预测的前n个元素全部重复，则会顺延来产生替换
+int* MOE::get_new_cache_ids_v1(const uint64_t* cached_expert, const uint64_t* pred_expert,
+                          const uint64_t* expert_frequency, int cache_num,
+                          int pred_num, int prefetch_num) {
+    // 拷贝 cache
+    std::vector<uint64_t> new_cache(cached_expert, cached_expert + cache_num);
+
+    // pred 中的非重复元素
+    std::unordered_set<uint64_t> cache_set(new_cache.begin(), new_cache.end());
+    std::vector<uint64_t> pred_unique;
+    for (int i = 0; i < pred_num; i++) {
+        if (cache_set.find(pred_expert[i]) == cache_set.end()) {
+            pred_unique.push_back(pred_expert[i]);
+        }
+    }
+
+    // cache 中的非重复候选（可被替换）
+    std::unordered_set<uint64_t> pred_set(pred_expert, pred_expert + pred_num);
+    std::vector<std::pair<uint64_t,int>> cache_candidates;
+    for (int i = 0; i < cache_num; i++) {
+        if (pred_set.find(cached_expert[i]) == pred_set.end()) {
+            cache_candidates.push_back({cached_expert[i], (int)expert_frequency[cached_expert[i]]});
+        }
+    }
+
+    // 按频率升序排序
+    std::sort(cache_candidates.begin(), cache_candidates.end(),
+         [](auto &a, auto &b){ return a.second < b.second; });
+
+    int replace_cnt = std::min(prefetch_num, (int)std::min(pred_unique.size(), cache_candidates.size()));
+
+    for (int i = 0; i < replace_cnt; i++) {
+        uint64_t old_id = cache_candidates[i].first;
+        uint64_t new_id = pred_unique[i];
+        // 找到 old_id 在 cache 中的位置并替换
+        for (int j = 0; j < cache_num; j++) {
+            if (new_cache[j] == old_id) {
+                new_cache[j] = new_id;
+                break;
+            }
+        }
+    }
+
+    int* result = new int[cache_num];
+    for (int i = 0; i < cache_num; i++) result[i] = (int)new_cache[i];
+    return result;
+}
+
+// 选取 pred 的前 prefetch_num 个，用其中的非重复元素替换掉 cache 中频率最低的 prefetch_num 个，可能会替换少于 prefetch_num 个，假设预测的前n个全部重复则不会发生替换
+int* MOE::get_new_cache_ids_v2(const uint64_t* cached_expert, const uint64_t* pred_expert,
+                          const uint64_t* expert_frequency, int cache_num,
+                          int pred_num, int prefetch_num) {
+    std::vector<uint64_t> new_cache(cached_expert, cached_expert + cache_num);
+
+    // 取 pred 的前 prefetch_num
+    std::vector<uint64_t> pred_topk;
+    for (int i = 0; i < std::min(prefetch_num, pred_num); i++) {
+        pred_topk.push_back(pred_expert[i]);
+    }
+
+    // cache 中的候选（非重复）
+    std::unordered_set<uint64_t> pred_set(pred_topk.begin(), pred_topk.end());
+    std::vector<std::pair<uint64_t,int>> cache_candidates;
+    for (int i = 0; i < cache_num; i++) {
+        if (pred_set.find(cached_expert[i]) == pred_set.end()) {
+            cache_candidates.push_back({cached_expert[i], (int)expert_frequency[cached_expert[i]]});
+        }
+    }
+
+    std::sort(cache_candidates.begin(), cache_candidates.end(),
+         [](auto &a, auto &b){ return a.second < b.second; });
+
+    int replace_cnt = std::min(prefetch_num, (int)cache_candidates.size());
+
+    int pi = 0;
+    for (int i = 0; i < replace_cnt && pi < (int)pred_topk.size(); i++) {
+        uint64_t old_id = cache_candidates[i].first;
+        uint64_t new_id = pred_topk[pi++];
+        // 如果 new_id 已经在 cache 中，跳过
+        if (std::find(new_cache.begin(), new_cache.end(), new_id) != new_cache.end()) {
+            i--; // 保持替换数量一致，继续找下一个可替换的
+            continue;
+        }
+        for (int j = 0; j < cache_num; j++) {
+            if (new_cache[j] == old_id) {
+                new_cache[j] = new_id;
+                break;
+            }
+        }
+    }
+
+    int* result = new int[cache_num];
+    for (int i = 0; i < cache_num; i++) result[i] = (int)new_cache[i];
+    return result;
 }

@@ -577,10 +577,11 @@ class MOEBindings {
         struct Args {
             CPUInfer *cpuinfer;
             MOE *moe;
+            int update_policy;
             int prefetch_num;
             int cache_num;
-            const void* input_tensor;
-            const uint64_t* expert_ids;
+            int pred_num;
+            const uint64_t* expert_frequency; // expert频次统计
             const uint64_t* pred_expert;
             uint64_t* cached_expert;
             uint64_t* up_slots;    // len = cache_num
@@ -593,14 +594,14 @@ class MOEBindings {
             // printf("in PrefetchBindings::inner!!!!!!!\n");
             Args *args_ = (Args *)args;
             args_->cpuinfer->enqueue_prefetch(
-                &MOE::prefetch, args_->moe, args_->prefetch_num, args_->cache_num,
-                args_->input_tensor, args_->expert_ids, args_->pred_expert,
+                &MOE::prefetch, args_->moe, args_->update_policy, args_->prefetch_num, args_->cache_num, args_->pred_num,
+                args_->expert_frequency, args_->pred_expert,
                 args_->cached_expert, args_->up_slots, args_->gate_slots,
                 args_->down_slots, args_->cache_ready, args_->stream_ptr);
         }
         static std::pair<intptr_t, intptr_t>
-        cpuinfer_interface(MOE &moe, int prefetch_num, int cache_num, intptr_t input_tensor,
-                           intptr_t expert_ids, intptr_t pred_expert, intptr_t cached_expert,
+        cpuinfer_interface(MOE &moe, int update_policy, int prefetch_num, int cache_num, int pred_num,
+                           intptr_t expert_frequency, intptr_t pred_expert, intptr_t cached_expert,
                            intptr_t up_slots,    // len = cache_num
                            intptr_t gate_slots,  // len = cache_num
                            intptr_t down_slots,  // len = cache_num
@@ -608,10 +609,11 @@ class MOEBindings {
                            intptr_t stream_ptr) {
             Args *args = new Args{nullptr,
                                   &moe,
+                                  update_policy,
                                   prefetch_num,
                                   cache_num,
-                                  (const void *)input_tensor,
-                                  (const uint64_t *)expert_ids,
+                                  pred_num,
+                                  (const uint64_t *)expert_frequency,
                                   (const uint64_t *)pred_expert,
                                   (uint64_t *)cached_expert,
                                   (uint64_t*) up_slots,
