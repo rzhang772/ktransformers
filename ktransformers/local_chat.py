@@ -6,7 +6,7 @@ Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
 """
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import platform
 import sys
 
