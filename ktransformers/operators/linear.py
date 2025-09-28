@@ -781,6 +781,135 @@ class SLinear(nn.Module):
     def unload(self):
         self.parameter_quantized = None
 
+class SLinearWrap(nn.Module):
+    def __init__(
+        self,
+        inter_dim,
+        hidden_dim,
+        gguf_loader,
+        config,
+        target_dtype,
+        device="cuda",
+        num_bits: int = 4,  # 4-bit/8-bit is supported
+        group_size: int = 64,  # -1, 32, 64, 128
+        act_order: bool = False,
+        is_k_full=True,
+    ):
+        super().__init__()
+        self.intermediate_size = inter_dim
+        self.hidden_size = hidden_dim
+        self.gguf_loader = gguf_loader
+        self.config = config
+
+        self.target_dtype = target_dtype
+        self.device = device
+
+        # 存储量化后的参数tensor
+        self.parameter_quantized = None
+        # self.ggml_type = ggml_type
+
+        self.num_bits = num_bits
+        self.group_size = group_size
+        self.act_order = act_order
+        self.is_k_full = is_k_full
+
+    @nvtx.annotate("SLinearWrap.forward")
+    def forward(self, x, expert_ids, weights, cached_ids, gate_slots, up_slots, down_slots, gate_type, up_type, down_type, act_fn, predequant_cache=None):
+        B, S, H = x.shape
+        assert H == self.hidden_size, f"输入 hidden {H} != self.hidden_size {self.hidden_size}"
+        # expert_ids = expert_ids.view(-1)
+        cached_num = cached_ids.numel()
+
+        gate_list, up_list, down_list = [], [], []
+
+        for i in range(cached_num):
+            if predequant_cache is not None:
+                g = predequant_cache['gate'][i]
+                u = predequant_cache['up'][i]
+                d = predequant_cache['down'][i]
+            else:
+                # dequantize 并确保 view 成期待的形状
+                g = self.gguf_loader.dequantize_expert(gate_slots[i], gate_type, target_dtype=self.target_dtype)
+                g = g.view(self.intermediate_size, self.hidden_size)  # (I, H)
+                u = self.gguf_loader.dequantize_expert(up_slots[i], up_type, target_dtype=self.target_dtype)
+                u = u.view(self.intermediate_size, self.hidden_size)  # (I, H)
+                d = self.gguf_loader.dequantize_expert(down_slots[i], down_type, target_dtype=self.target_dtype)
+                d = d.view(self.hidden_size, self.intermediate_size)  # (H, I)
+
+            gate_list.append(g)
+            up_list.append(u)
+            down_list.append(d)
+
+        # Stacks:
+        # W_gate: (cached_num, I, H)
+        # W_up:   (cached_num, I, H)
+        # W_down: (cached_num, H, I)
+        W_gate = torch.stack(gate_list, dim=0)   # (cached_num, I, H)
+        W_up   = torch.stack(up_list, dim=0)     # (cached_num, I, H)
+        W_down = torch.stack(down_list, dim=0)   # (cached_num, H, I)
+
+        # --------- 2) 计算 gate_out 与 up_out（使用 bmm，避免 cross-expert 混淆） ----------
+        # x_flat: (B*S, H)
+        x_flat = x.reshape(B * S, H).to(self.device)
+
+        # x_expanded: (cached_num, B*S, H)  (通过 expand + contiguous)
+        x_exp = x_flat.unsqueeze(0).expand(cached_num, -1, -1).contiguous()
+        assert x_exp.shape == (cached_num, B * S, H), f"x_exp shape {x_exp.shape} != (cached_num, B*S, H) = ({cached_num}, {B*S}, {H})"
+
+        # 对于 gate/up: 我们需要 (cached_num, B*S, H) bmm (cached_num, H, I) -> (cached_num, B*S, I)
+        # 注意 W_gate 当前是 (cached_num, I, H) -> transpose -> (cached_num, H, I)
+        gate_out_flat = torch.bmm(x_exp, W_gate.transpose(1, 2))  # (cached_num, B*S, I)
+        assert gate_out_flat.shape == (cached_num, B * S, self.intermediate_size), f"gate_out_flat shape {gate_out_flat.shape} != (cached_num, B*S, I) = ({cached_num}, {B*S}, {self.intermediate_size})"
+        up_out_flat   = torch.bmm(x_exp, W_up.transpose(1, 2))    # (cached_num, B*S, I)
+        assert up_out_flat.shape == (cached_num, B * S, self.intermediate_size), f"up_out_flat shape {up_out_flat.shape} != (cached_num, B*S, I) = ({cached_num}, {B*S}, {self.intermediate_size})"
+
+        # reshape 回 (cached_num, B, S, I)
+        gate_out = gate_out_flat.view(cached_num, B, S, self.intermediate_size)
+        up_out   = up_out_flat.view(cached_num, B, S, self.intermediate_size)
+
+        # --------- 3) 激活：activated = act_fn(gate_out) * up_out  ----------
+        activated = act_fn(gate_out) * up_out  # (cached_num, B, S, I)
+        assert activated.shape == (cached_num, B, S, self.intermediate_size), f"activated shape {activated.shape} != (cached_num, B, S, I) = ({cached_num}, {B}, {S}, {self.intermediate_size})"
+
+        # --------- 4) down_proj：按 expert batched bmm ----------
+        # activated_flat: (cached_num, B*S, I)
+        activated_flat = activated.view(cached_num, B * S, self.intermediate_size)
+        assert activated_flat.shape == (cached_num, B * S, self.intermediate_size), f"activated_flat shape {activated_flat.shape} != (cached_num, B*S, I) = ({cached_num}, {B*S}, {self.intermediate_size})"
+
+        # W_down: (cached_num, H, I) -> transpose(1,2) -> (cached_num, I, H)
+        # activated_flat (cached_num, B*S, I) bmm W_down.transpose(1,2) (cached_num, I, H) -> (cached_num, B*S, H)
+        down_out_flat = torch.bmm(activated_flat, W_down.transpose(1, 2))  # (cached_num, B*S, H)
+        assert down_out_flat.shape == (cached_num, B * S, H), f"down_out_flat shape {down_out_flat.shape} != (cached_num, B*S, H) = ({cached_num}, {B*S}, {H})"
+
+        # reshape 回 (cached_num, B, S, H)
+        # down_out = down_out_flat.view(cached_num, B, S, self.hidden_size)
+
+        # 加权求和，将cache hit的weight取真实值，cache miss的取0
+        # 2. 生成 mask -> [N, K, cached_num]
+        mask = (expert_ids[:, :, None] == cached_ids[None, None, :])
+        assert mask.shape == (B * S, weights.shape[1], cached_num), f"mask shape {mask.shape} != (N, K, cached_num) = ({B*S}, {weights.shape[1]}, {cached_num})"
+
+        # 3. 扩展 weights 并按 mask 乘 -> [N, K, cached_num]
+        weighted = torch.where(mask, weights[:, :, None], torch.zeros(1, device=self.device))
+        assert weighted.shape == (B * S, weights.shape[1], cached_num), f"weighted shape {weighted.shape} != (N, K, cached_num) = ({B*S}, {weights.shape[1]}, {cached_num})"
+
+        # 4. 沿激活专家维度 K 求和 -> [N, cached_num]
+        weights_cache = weighted.sum(dim=1)
+        assert weights_cache.shape == (B * S, cached_num), f"weights_cache shape {weights_cache.shape} != (N, cached_num) = ({B*S}, {cached_num})"
+
+        # 5. 按 cached_num 加权求和 -> [N, H]
+        down_out_nch = down_out_flat.permute(1, 0, 2)  # (B*S, cached_num, H) * (B*S, cached_num, 1)
+        result_flat = (down_out_nch * weights_cache[:, :, None]).sum(dim=1)
+        assert result_flat.shape == (B * S, H), f"result_flat shape {result_flat.shape} != (N, H) = ({B*S}, {H})"
+
+        # 6. 还原回 [B, S, H]
+        result = result_flat.view(B, S, H)
+        assert result.shape == (B, S, H), f"result shape {result.shape} != (B, S, H) = ({B}, {S}, {H})"
+
+        return result
+
+
+
 class KLinearCPUInfer(KLinearBase):
     CPU_INFER = None
     def __init__(

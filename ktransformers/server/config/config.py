@@ -162,6 +162,10 @@ class Config(metaclass=Singleton):
         # self.cpu_infer = psutil.cpu_count(logical=False) - 3
         self.cpu_infer = 5
         self.prefetch_num = 2
+        self.prefetch_strategy = 0 # 0: 固定传输数量， 1: 动态传输数量
+        self.gpu_compute = True
+
+        self.skip_layer = 1 # 测试传统的skip layer prefetch方法，其中提前多少层。例如当为1时，在i层开始prefetch i+1层
 
         # file config
         self.local_store_configs: dict = cfg.get("local_store", {})

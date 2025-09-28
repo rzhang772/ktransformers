@@ -393,7 +393,8 @@ class DeepseekV3MLP(nn.Module):
                 prompt_name: Optional[str] = None,
                 mode: Optional[str] = None, 
                 token_idx: Optional[torch.Tensor] = None,
-                hit_rate: Optional[list[float]] = None):
+                hit_rate: Optional[list[float]] = None,
+                next_layer: Optional[torch.Tensor] = None,):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj # shape: [batch_size, seq_len, hidden_size]
 
@@ -1178,6 +1179,7 @@ class DeepseekV3DecoderLayer(nn.Module):
     @nvtx.annotate("DeepseekV3DecoderLayer.forward")
     def forward(
         self,
+        next_layer,
         hidden_states: torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
@@ -1207,10 +1209,12 @@ class DeepseekV3DecoderLayer(nn.Module):
                 (see `past_key_values`).
             past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
         """
+        # assert next_layer is not None, "next_layer should be passed for DeepseekV3DecoderLayer"
         if "padding_mask" in kwargs:
             warnings.warn(
                 "Passing `padding_mask` is deprecated and will be removed in v4.37. Please make sure use `attention_mask` instead.`"
             )
+        
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
@@ -1229,9 +1233,10 @@ class DeepseekV3DecoderLayer(nn.Module):
         hidden_states = residual + hidden_states
 
         # Fully Connected
+        # print(f"in DeecoderLayer next_layer: {next_layer}")
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states, prompt_name, mode, token_idx, hit_rate)
+        hidden_states = self.mlp(hidden_states, prompt_name, mode, token_idx, hit_rate, next_layer)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
