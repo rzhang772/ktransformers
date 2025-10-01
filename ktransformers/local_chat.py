@@ -5,7 +5,7 @@ Version      : 0.1.0
 Copyright (c) 2024 by KVCache.AI, All Rights Reserved. 
 """
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "6"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 import platform
 import sys
 
@@ -62,6 +62,9 @@ def local_chat(
     max_new_tokens: int = 1000,
     cpu_infer: int = Config().cpu_infer,
     prefetch_num: int = Config().prefetch_num,
+    prefetch_method: int = Config().prefetch_method, # 0: token prefetch, 1: layer prefetch
+    prefetch_strategy: int = Config().prefetch_strategy, # 0: 固定传输数量， 1: 动态传输数量
+    gpu_compute_max_num: int = Config().gpu_compute_max_num,
     use_cuda_graph: bool = True,
     prompt_file : str | None = None,
     mode: str = "normal",
@@ -74,6 +77,9 @@ def local_chat(
 
     Config().cpu_infer = cpu_infer # not work, because cpuinfer is build in the import stage, must set before import
     Config().prefetch_num = prefetch_num
+    Config().prefetch_method = prefetch_method
+    Config().prefetch_strategy = prefetch_strategy
+    Config().gpu_compute_max_num = gpu_compute_max_num
     # print(f"cpu_infer: {Config().cpu_infer}")
     if torch.xpu.is_available():
         use_cuda_graph = False

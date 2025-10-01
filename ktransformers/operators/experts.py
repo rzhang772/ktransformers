@@ -148,7 +148,7 @@ class KExpertsCPU(KExpertsBase):
     hit_rate = []
 
     # [0, 58]
-    prefetch_layers = [i for i in range(0, 58)]
+    prefetch_layers = [i for i in range(9, 58)]
 
     #stream_map:dict = {} # Manage cuda stream on different gpu
     # @TODO add yaml
@@ -446,8 +446,10 @@ class KExpertsCPU(KExpertsBase):
             return KExpertsCPU.output_gpu_map[self.out_device].view(1, -1)
         else:
             if mode == "decode":
-                output = self.decode_with_layer_prefetch(mode, token_idx, input_tensor, identity, expert_ids, weights, shared_experts, bsz_tensor, cuda_graph_idx, hit_rate, next_layer)
-                # output = self.decode_with_token_prefetch(mode, token_idx, input_tensor, identity, expert_ids, weights, shared_experts, bsz_tensor, cuda_graph_idx, hit_rate)
+                if Config().prefetch_method == 0:
+                    output = self.decode_with_token_prefetch(mode, token_idx, input_tensor, identity, expert_ids, weights, shared_experts, bsz_tensor, cuda_graph_idx, hit_rate)
+                elif Config().prefetch_method == 1:
+                    output = self.decode_with_layer_prefetch(mode, token_idx, input_tensor, identity, expert_ids, weights, shared_experts, bsz_tensor, cuda_graph_idx, hit_rate, next_layer)
                 return output
             else:
                 # non-generate mode, compute experts on CPU
@@ -506,7 +508,7 @@ class KExpertsCPU(KExpertsBase):
         gpu_compute = Config().gpu_compute
         in_gpu_mask = torch.zeros(self.n_routed_experts, dtype=torch.int64, device=self.cpu_device)
         if gpu_compute:
-            for i in range(self.cached_experts_num):
+            for i in range(min(self.cached_experts_num, Config().gpu_compute_max_num)):
                 in_gpu_mask[self.cached_experts_ids[i].item()] = 1
 
         input_tensor = input_tensor.contiguous().cpu()
@@ -518,8 +520,11 @@ class KExpertsCPU(KExpertsBase):
         # 计算命中率
         mmask = torch.isin(expert_ids.squeeze(), self.cached_experts_ids)
         hn = mmask.sum()
+        if hn > Config().gpu_compute_max_num:
+            hn = torch.tensor(Config().gpu_compute_max_num)
         hn_rate = hn.item() / self.cached_experts_num
-        hit_rate.append(hn_rate)
+        hit_rate[self.layer_id].append(hn_rate)
+
         
         
         # cpu output
@@ -546,7 +551,7 @@ class KExpertsCPU(KExpertsBase):
         
         if gpu_compute:
             wait_cache_ready()
-            gpu_output = self.compute_gpu_experts_one(identity, expert_ids, weights)
+            gpu_output = self.compute_gpu_experts_one(identity, expert_ids, weights, in_gpu_mask)
             # gpu_output = self.compute_gpu_experts_wrap(identity, expert_ids_gpu, weights_gpu)
             if Config().prefetch_num >= 0 and self.layer_id in KExpertsCPU.prefetch_layers:
                 self.cache_ready[0] = 0
@@ -619,9 +624,9 @@ class KExpertsCPU(KExpertsBase):
                 self.expert_frequency[expert_ids[i][j]] += 1    
             
         gpu_compute = Config().gpu_compute
-        in_gpu_mask = torch.zeros(self.n_routed_experts, dtype=torch.int64, device=self.cpu_device)
+        in_gpu_mask = torch.zeros(self.n_routed_experts, dtype=torch.int64, device=self.cpu_device)# length: 256
         if gpu_compute:
-            for i in range(self.cached_experts_num):
+            for i in range(min(self.cached_experts_num, Config().gpu_compute_max_num)):
                 in_gpu_mask[self.cached_experts_ids[i].item()] = 1
 
         input_tensor = input_tensor.contiguous().cpu()
@@ -633,8 +638,10 @@ class KExpertsCPU(KExpertsBase):
         # 计算命中率
         mmask = torch.isin(expert_ids.squeeze(), self.cached_experts_ids)
         hn = mmask.sum()
+        if hn > Config().gpu_compute_max_num:
+            hn = torch.tensor(Config().gpu_compute_max_num)
         hn_rate = hn.item() / self.cached_experts_num
-        hit_rate.append(hn_rate)
+        hit_rate[self.layer_id].append(hn_rate)
         if self.layer_id < 58 - Config().skip_layer:
             next_KDeepseekV3MoE = next_layer.mlp
             next_KExpertCPU = next_layer.mlp.experts.generate_experts
@@ -701,7 +708,7 @@ class KExpertsCPU(KExpertsBase):
             wait_cache_ready()
             # if self.layer_id == 57:
                 # print(f"\nlayer {self.layer_id}, token {token_idx}, self.cached_experts_ids: {self.cached_experts_ids}")
-            gpu_output = self.compute_gpu_experts_one(identity, expert_ids, weights)
+            gpu_output = self.compute_gpu_experts_one(identity, expert_ids, weights, in_gpu_mask)
             self.layer_prefetch_ready[0] = 0
         
         # sync cpu and gpu
@@ -770,7 +777,7 @@ class KExpertsCPU(KExpertsBase):
         return weighted_output
     
     @nvtx.annotate("KExpertsCPU.compute_gpu_experts_one")
-    def compute_gpu_experts_one(self, input_tensor, expert_ids, weights):
+    def compute_gpu_experts_one(self, input_tensor, expert_ids, weights, in_gpu_mask=None):
         '''
         input_tensor: [1, 1, hidden_dim]
         expert_ids: [1, 8]
@@ -783,7 +790,7 @@ class KExpertsCPU(KExpertsBase):
         weighted_output = torch.zeros_like(input_tensor, device=self.gpu_device, dtype=input_tensor.dtype)  # [batch_size, sequence_length, hidden_dim]
 
         for i in range(self.cached_experts_num):
-            if self.cached_experts_ids[i] not in expert_ids:
+            if self.cached_experts_ids[i] not in expert_ids or in_gpu_mask[self.cached_experts_ids[i]] == 0:
                 continue
             else:
             # if self.cached_experts_ids[i] in expert_ids:

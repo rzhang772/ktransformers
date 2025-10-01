@@ -358,7 +358,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             
         start_time = time.time()
         use_cuda_graph = False
-        hit_rate = []
+        hit_rate = [[] for _ in range(58)]
         for i in range(1, max_new_tokens):
             if use_flashinfer_mla:
                 MLAWrapperSingleton.plan_all(None,None,None,position_ids.squeeze(1)+1,None,
@@ -421,12 +421,19 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     print(f"eval count:           {tokens_generated} token(s)")
     print(f"eval duration:        {total_time}s")
     print(f"eval rate:            {tokens_per_second} tokens/s")
-    if len(hit_rate) > 0:
-        print(f"hit rate:             {sum(hit_rate)/len(hit_rate)}")
-        print(f"sum of hit_rate:      {sum(hit_rate)}")
-        print(f"hit_rate length:      {len(hit_rate)}")
-        print(f"type of hit_rate:      {type(hit_rate)}")
-        print(f"type of hit_rate ele:  {type(hit_rate[0])}")
+
+    layers_hits = [sum(x)/len(x) if len(x)>0 else 0 for x in hit_rate]
+    for layer_id, rate in enumerate(layers_hits):
+        print(f"{layer_id:02d}:{rate:.3f};", end=" ")
+        if layer_id % 10 == 9:
+            print("")
+    print(f"\naverage hit rate:     {sum(layers_hits)/len(layers_hits):.3f}")
+    # if len(hit_rate) > 0:
+    #     print(f"hit rate:             {sum(hit_rate)/len(hit_rate)}")
+    #     print(f"sum of hit_rate:      {sum(hit_rate)}")
+    #     print(f"hit_rate length:      {len(hit_rate)}")
+    #     print(f"type of hit_rate:      {type(hit_rate)}")
+    #     print(f"type of hit_rate ele:  {type(hit_rate[0])}")
 
     # for i in hit_rate:
     #     print(i, end=", ")
