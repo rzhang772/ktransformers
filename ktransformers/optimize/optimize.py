@@ -30,11 +30,11 @@ def inject(module, local_optimization_dict, model_config:AutoConfig ,gguf_loader
                     gguf_loader.tensor_device_map[inject_module_meta["key"]] = inject_module_meta["kwargs"] if "kwargs" in inject_module_meta else dict()
                     import_class_name = import_path[-1]
                     module_cls=getattr(__import__(import_module_name, fromlist=[""]), import_class_name)
-                    print(f"Injecting {child_prefix} as", import_module_name, ".", import_class_name)
+                    # print(f"Injecting {child_prefix} as", import_module_name, ".", import_class_name)
                     inject_module=module_cls(key = inject_module_meta["key"], gguf_loader = gguf_loader, config = model_config, orig_module=child, **inject_module_meta["kwargs"])
                     set_module(module, name, inject_module)
                 elif inject_module_meta["class"] == "default":
-                    print(f"Injecting {child_prefix} as default")
+                    # print(f"Injecting {child_prefix} as default")
                     gguf_loader.tensor_device_map[inject_module_meta["key"]] = inject_module_meta["kwargs"] if "kwargs" in inject_module_meta else dict()
                 else:
                     raise Exception("inject_module_meta[\"class\"] must be \"default\" or a class path")

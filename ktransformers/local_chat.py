@@ -139,13 +139,13 @@ def local_chat(
     logging.basicConfig(level=logging.INFO)
 
     system = platform.system()
-    if system == "Windows":
-        os.system("cls")
-    else:
-        os.system("clear")
+    # if system == "Windows":
+    #     os.system("cls")
+    # else:
+    #     os.system("clear")
 
 
-    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test1"):
+    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test_prompt"):
         dataset_files = {}
 
         for dataset_name in os.listdir(base_dir):
@@ -194,13 +194,13 @@ def local_chat(
                 )
             else:
                 generated = prefill_and_generate(
-                    model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size,
+                    model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size, dataset = dataset,file_name = file_name,
                     # prompt_name=prompt_name
                 )
 
 
-            break
-        break
+        #     break
+        # break
 
 
     # while True:

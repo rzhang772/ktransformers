@@ -209,7 +209,7 @@ def tf_logits_warper(generation_config):
 @nvtx.annotate("prefill_and_generate")
 def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cuda_graph: bool = True,
                          mode = 'normal', force_think: bool = False, chunk_size = 16384, use_flashinfer_mla = False,
-                         num_heads = None, head_dim_ckv = None, head_dim_kpe = None, q_head_dim = None, prompt_name = None):
+                         num_heads = None, head_dim_ckv = None, head_dim_kpe = None, q_head_dim = None, prompt_name = None, dataset = None, file_name = None):
     import os
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     torch._dynamo.config.suppress_errors = True
@@ -413,7 +413,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     tokens_per_second = tokens_generated / total_time
 
     print("")
-
+    print(f"dataset name:              {dataset}")
+    print(f"file name:                 {file_name}")
     print(f"prompt eval count:    {prefill_count} token(s)")
     print(f"prompt eval duration: {prefill_time}s")
     print(f"prompt eval rate:     {prefill_count/prefill_time} tokens/s")

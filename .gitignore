@@ -37,3 +37,4 @@ moe_analysis/test1/
 ktransformers/operators/test_topk/
 ktransformers/operators/topk_idx/
 profile/
+expirments/
