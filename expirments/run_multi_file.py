@@ -7,12 +7,12 @@ import time
 # 参数范围
 baseline = 0  # 1:原始KT， 0:修改后的KT
 cpu_infer_range = range(10, 11, 2)
-prefetch_num_range = [1,2] #range(-1, 5)
+prefetch_num_range = [-1, 4] #range(-1, 5)
 gpu_compute_max_num_range = range(7, 8)
-prefetch_method = 1  # 0: token prefetch, 1: layer prefetch
+prefetch_method = 0  # 0: token prefetch, 1: layer prefetch
 prefetch_strategy = 0
 skip_layer = 1
-prefetch_start_layer = 29
+prefetch_start_layer = 0
 
 run_time = time.strftime("%Y%m%d-%H%M%S")
 print(f"\n实验开始时间: {run_time}, \n参数范围: \ncpu_infer={list(cpu_infer_range)}, \nprefetch_num={list(prefetch_num_range)}, \ngpu_compute_max_num={list(gpu_compute_max_num_range)}, \nprefetch_method={prefetch_method}, \nprefetch_strategy={prefetch_strategy}, \nskip_layer={skip_layer}, \nprefetch_start_layer={prefetch_start_layer}")
