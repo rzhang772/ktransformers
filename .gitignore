@@ -38,3 +38,4 @@ profile/
 moe_analysis/
 expirments/experiment_results_logs/
 expirments/*.csv
+expirments/old_results/

@@ -29,6 +29,7 @@ from ktransformers.operators import base_operator
 from ktransformers.models.custom_cache import StaticCache
 from ktransformers.util.cuda_graph_runner import CUDAGraphRunner
 from ktransformers.util.textstream import TextStreamer
+from ktransformers.server.config.config import Config
 if not torch.xpu.is_available():
     from ktransformers.operators.flashinfer_wrapper import MLAWrapperSingleton
 import socket
@@ -210,7 +211,7 @@ def tf_logits_warper(generation_config):
 @nvtx.annotate("prefill_and_generate")
 def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cuda_graph: bool = True,
                          mode = 'normal', force_think: bool = False, chunk_size = 16384, use_flashinfer_mla = False,
-                         num_heads = None, head_dim_ckv = None, head_dim_kpe = None, q_head_dim = None, prompt_name = None):
+                         num_heads = None, head_dim_ckv = None, head_dim_kpe = None, q_head_dim = None, prompt_name = None, dataset_name = None, file_name = None):
     import os
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
     torch._dynamo.config.suppress_errors = True
@@ -414,7 +415,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     #     json.dump(hit_rate, f)
 
     print("")
-
+    print(f"dataset name:         {dataset_name}")
+    print(f"file name:            {file_name}")
     print(f"prompt eval count:    {prefill_count} token(s)")
     print(f"prompt eval duration: {prefill_time}s")
     print(f"prompt eval rate:     {prefill_count/prefill_time} tokens/s")
@@ -427,16 +429,9 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         print(f"{layer_id:02d}:{rate:.3f};", end=" ")
         if layer_id % 10 == 9:
             print("")
-    print(f"\naverage hit rate:     {sum(layers_hits)/len(layers_hits):.3f}")
-    # if len(hit_rate) > 0:
-    #     print(f"hit rate:             {sum(hit_rate)/len(hit_rate)}")
-    #     print(f"sum of hit_rate:      {sum(hit_rate)}")
-    #     print(f"hit_rate length:      {len(hit_rate)}")
-    #     print(f"type of hit_rate:      {type(hit_rate)}")
-    #     print(f"type of hit_rate ele:  {type(hit_rate[0])}")
-
-    # for i in hit_rate:
-    #     print(i, end=", ")
+    prefetch_layers_hit_rate = sum(layers_hits[Config().prefetch_start_layer:])/len(layers_hits[Config().prefetch_start_layer:]) if len(layers_hits[Config().prefetch_start_layer:])>0 else 0
+    print(f"\nhit rate:     {sum(layers_hits)/len(layers_hits):.3f}")
+    print(f"prefetch hit rate: {prefetch_layers_hit_rate:.3f}")
 
     return tokens
 

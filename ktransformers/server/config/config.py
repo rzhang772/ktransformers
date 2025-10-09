@@ -168,6 +168,8 @@ class Config(metaclass=Singleton):
         self.prefetch_strategy = 0 # 0: 固定传输数量， 1: 动态传输数量
         self.gpu_compute_max_num = 8
         self.gpu_compute = True
+        self.prefetch_start_layer = 0
+        self.baseline = 0  # 1:原始KT， 0:修改后的KT
 
         self.skip_layer = 1 # 测试传统的skip layer prefetch方法，其中提前多少层。例如当为1时，在i层开始prefetch i+1层
 

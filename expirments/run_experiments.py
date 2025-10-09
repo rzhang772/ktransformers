@@ -5,12 +5,23 @@ import os
 import time
 
 # 参数范围
-cpu_infer_range = range(8, 11, 2)
-prefetch_num_range = range(-1, 9)
+'''
+baseline: 1:原始KT， 0:修改后的KT，作废
+gpu_compute: 是否开启routed expert GPU混合运算。 （shared一直在GPU） 作废
+prefetch_num:
+	-1: 只在GPU计算初始化时cache的expert，并且不进行预测
+	0: 只在GPU计算初始化时cache的expert，进行预测
+	>1: 动态prefetch
+prefetch_strategy: 0:固定传输数量即有重复则顺延， 1:动态传输数量即固定只看前n个只传输不重复的
+'''
+baseline = 0  # 1:原始KT， 0:修改后的KT
+cpu_infer_range = range(10, 11, 2)
+prefetch_num_range = range(1, 9)
 gpu_compute_max_num_range = range(8, 9)
-prefetch_method = 0  # 0: token prefetch, 1: layer prefetch
+prefetch_method = 1  # 0: token prefetch, 1: layer prefetch
 prefetch_strategy = 0  # 0: 固定传输数量， 1: 动态传输数量
 skip_layer = 1  # 测试传统的skip layer prefetch方法，其中提前多少层。例如当为1时，在i层开始prefetch i+1层
+prefetch_start_layer = 0  # 从第几层开始预取
 
 run_time = time.strftime("%Y%m%d-%H%M%S")
 # 输出文件
@@ -45,11 +56,13 @@ def run_experiment(cpu_infer, prefetch_num, gpu_compute_max_num):
         "--prompt_file", "./myprompt.txt",
         "--max_new_tokens", "100",
         "--cpu_infer", str(cpu_infer),
+        "--baseline", str(baseline),
         "--prefetch_num", str(prefetch_num),
-        "--prefetch_method", "0",  # 0: token prefetch, 1: layer prefetch
+        "--prefetch_method", str(prefetch_method),  # 0: token prefetch, 1: layer prefetch
         "--gpu_compute_max_num", str(gpu_compute_max_num),
-        # "--prefetch_strategy", "0",  # 0: 固定传输数量 1: 动态传输数量
-        # "--skip_layer", "1",  # 测试传统的skip layer prefetch方法，其中提前多少层。例如当为1时，在i层开始prefetch i+1层
+        "--prefetch_strategy", str(prefetch_strategy),  # 0: 固定传输数量， 1: 动态传输数量
+        "--skip_layer", str(skip_layer),  # 测试传统的skip layer prefetch方法，其中提前多少层。例如当为1时，在i层开始prefetch i+1层
+        "--prefetch_start_layer", str(prefetch_start_layer)
     ]
 
     if prefetch_method == 0:

@@ -148,7 +148,7 @@ class KExpertsCPU(KExpertsBase):
     hit_rate = []
 
     # [0, 58]
-    prefetch_layers = [i for i in range(9, 58)]
+    prefetch_layers = [i for i in range(Config().prefetch_start_layer, 58)]
 
     #stream_map:dict = {} # Manage cuda stream on different gpu
     # @TODO add yaml
@@ -579,8 +579,8 @@ class KExpertsCPU(KExpertsBase):
                     self.predictor = self.predictor.to(self.gpu_device)
                     # expert_ids_gpu = expert_ids.to(self.gpu_device)  # 确保expert_ids在GPU上
                     # expert_mask = batch_multihot_encode(expert_ids_gpu).to(self.gpu_device)  # shape [batch_size, expert_num]
-                    expert_mask = torch.zeros((expert_ids.size(0), self.n_routed_experts), device=self.gpu_device)
-                    predicted_experts, probs = self.predictor.predict(identity.reshape(-1, identity.shape[2]), expert_mask=expert_mask)
+                    # expert_mask = torch.zeros((expert_ids.size(0), self.n_routed_experts), device=self.gpu_device)
+                    predicted_experts, probs = self.predictor.predict(identity.reshape(-1, identity.shape[2]))
                     self.predicted_experts_cpu = predicted_experts.to(self.cpu_device).view(-1)
             else:
                 # 生成 0~255 的整数序列
@@ -642,10 +642,14 @@ class KExpertsCPU(KExpertsBase):
             hn = torch.tensor(Config().gpu_compute_max_num)
         hn_rate = hn.item() / self.cached_experts_num
         hit_rate[self.layer_id].append(hn_rate)
+
+
         if self.layer_id < 58 - Config().skip_layer:
+            # print("-----------------flag0------------------")
             next_KDeepseekV3MoE = next_layer.mlp
             next_KExpertCPU = next_layer.mlp.experts.generate_experts
-            if self.layer_id in KExpertsCPU.prefetch_layers and gpu_compute:
+            # if self.layer_id in KExpertsCPU.prefetch_layers and gpu_compute:
+            if gpu_compute:
                 if Config().prefetch_num >= 0:
                     topk_ex, probs = next_KDeepseekV3MoE.gate(identity)
                     self.predicted_experts_cpu = topk_ex.to(self.cpu_device).view(-1)
@@ -673,7 +677,9 @@ class KExpertsCPU(KExpertsBase):
                                                     KExpertsCPU.prefetch_stream.cuda_stream, # prefetch stream
                                                 )
                                             )
-                if Config().prefetch_num >= 0:
+                # print("-----------------flag1------------------")
+                if Config().prefetch_num >= 0:  
+                    # print(f"submit {next_KExpertCPU.layer_id} prefetch")
                     sub_prefetch()
 
         # cpu output
@@ -705,6 +711,7 @@ class KExpertsCPU(KExpertsBase):
                 self.layer_prefetch_ready[0] = 1
             # if self.layer_id == 57:
                 # print(f"\nbefore wait flag: {self.layer_prefetch_ready}")
+            # print(f"token {token_idx}, layer {self.layer_id}, waitflag: {self.layer_prefetch_ready}")
             wait_cache_ready()
             # if self.layer_id == 57:
                 # print(f"\nlayer {self.layer_id}, token {token_idx}, self.cached_experts_ids: {self.cached_experts_ids}")

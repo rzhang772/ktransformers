@@ -46,13 +46,13 @@ class TopkPredictor(nn.Module):
         #     nn.Linear(512, expert_num)  # Predicting probability for 256 experts
         # )
     
-    def forward(self, hidden_state, expert_mask):
+    def forward(self, hidden_state, expert_mask = None):
         # hidden_state: [batch_size, hidden_dim]
         # expert_mask:  [batch_size, 256]
         
-        assert hidden_state.shape[1] == 7168, f"Expected hidden_state shape [batch_size, 7168], got {hidden_state.shape}"
-        assert expert_mask.shape[1] == 256, f"Expected expert_mask shape [batch_size, 256], got {expert_mask.shape}"
-        assert hidden_state.shape[0] == expert_mask.shape[0], f"Batch size mismatch: {hidden_state.shape[0]} vs {expert_mask.shape[0]}"
+        # assert hidden_state.shape[1] == 7168, f"Expected hidden_state shape [batch_size, 7168], got {hidden_state.shape}"
+        # assert expert_mask.shape[1] == 256, f"Expected expert_mask shape [batch_size, 256], got {expert_mask.shape}"
+        # assert hidden_state.shape[0] == expert_mask.shape[0], f"Batch size mismatch: {hidden_state.shape[0]} vs {expert_mask.shape[0]}"
 
         # x1 = self.hidden_proj(hidden_state)
         # x2 = self.expert_proj(expert_mask)
@@ -60,8 +60,8 @@ class TopkPredictor(nn.Module):
         # logits = self.output_layer(x)  # [batch_size, 256]
         logits = self.hidden_proj(hidden_state)  # [batch_size, 256]
         return logits  # Use BCEWithLogitsLoss
-    
-    def predict(self, hidden_state, expert_mask, top_k=8):
+
+    def predict(self, hidden_state, expert_mask = None, top_k=8):
         logits = self.forward(hidden_state, expert_mask)
         probabilities = torch.sigmoid(logits)
         topk_preds = torch.topk(logits, k=top_k, dim=-1).indices

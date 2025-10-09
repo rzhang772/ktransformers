@@ -5,7 +5,8 @@ Version      : 0.1.0
 Copyright (c) 2024 by KVCache.AI, All Rights Reserved. 
 """
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+import time
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import platform
 import sys
 
@@ -65,6 +66,8 @@ def local_chat(
     prefetch_method: int = Config().prefetch_method, # 0: token prefetch, 1: layer prefetch
     prefetch_strategy: int = Config().prefetch_strategy, # 0: 固定传输数量， 1: 动态传输数量
     gpu_compute_max_num: int = Config().gpu_compute_max_num,
+    prefetch_start_layer: int = Config().prefetch_start_layer,
+    baseline: int = Config().baseline,  # 1:原始KT， 0:修改后的KT
     use_cuda_graph: bool = True,
     prompt_file : str | None = None,
     mode: str = "normal",
@@ -80,6 +83,8 @@ def local_chat(
     Config().prefetch_method = prefetch_method
     Config().prefetch_strategy = prefetch_strategy
     Config().gpu_compute_max_num = gpu_compute_max_num
+    Config().prefetch_start_layer = prefetch_start_layer
+    Config().baseline = baseline
     # print(f"cpu_infer: {Config().cpu_infer}")
     if torch.xpu.is_available():
         use_cuda_graph = False
@@ -151,7 +156,7 @@ def local_chat(
     #     os.system("clear")
 
 
-    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test1"):
+    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test_prompt"):
         dataset_files = {}
 
         for dataset_name in os.listdir(base_dir):
@@ -201,12 +206,13 @@ def local_chat(
                 )
             else:
                 generated = prefill_and_generate(
-                    model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size, prompt_name=prompt_name
+                    model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size, prompt_name=prompt_name, dataset_name=dataset, file_name=file_name
                 )
+            time.sleep(1)  # 等待文件写入完成
 
 
-            break
-        break
+        #     break
+        # break
 
 
     # while True:
