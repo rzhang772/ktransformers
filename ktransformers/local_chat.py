@@ -179,6 +179,8 @@ def local_chat(
 
 
     for dataset, files in files_by_dataset.items():
+        # if dataset not in ["xsum"]:
+        #     continue
         print(f"\n📂 Dataset: {dataset} ({len(files)} files)")
         for path in files:
             print(f"input:  - {path}")

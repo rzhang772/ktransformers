@@ -39,3 +39,5 @@ moe_analysis/
 expirments/experiment_results_logs/
 expirments/*.csv
 expirments/old_results/
+expirments/KTexpirments/kt_logs/
+expirments/KTexpirments/*.csv

@@ -7,7 +7,7 @@ import time
 # 参数范围
 baseline = 0  # 1:原始KT， 0:修改后的KT
 cpu_infer_range = range(10, 11, 2)
-prefetch_num_range = [-1, 4] #range(-1, 5)
+prefetch_num_range = range(-1, 5)
 gpu_compute_max_num_range = range(7, 8)
 prefetch_method = 0  # 0: token prefetch, 1: layer prefetch
 prefetch_strategy = 0
