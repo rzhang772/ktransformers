@@ -304,7 +304,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             past_key_values = None
         
         generation_config, model_kwargs = model._prepare_generation_config(
-            None, do_sample=True
+            None, do_sample=False, temperature=1, top_p=0.95,
             # change this to modify generate config
             #top_k=5, top_p=0.85, temperature=0.1
         )
@@ -362,10 +362,10 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         
         cuda_graph_runner = None
         
-        # decode_id_and_prob = {
-        #     'token_id': [],
-        #     'prob': [],
-        # }
+        decode_id_and_prob = {
+            'token_id': [],
+            'prob': [],
+        }
 
         start_time = time.time()
         use_cuda_graph = False
@@ -405,8 +405,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                                            )
             next_token = next_token.to(torch_device)
 
-            # decode_id_and_prob['token_id'].append(int(next_token))
-            # decode_id_and_prob['prob'].append(float(prob))
+            decode_id_and_prob['token_id'].append(int(next_token))
+            decode_id_and_prob['prob'].append(float(prob))
             
             inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
             generated_ids[:, cache_position] = next_token.int()
@@ -429,10 +429,10 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     # with open("list.json", "w") as f:
     #     json.dump(hit_rate, f)
     # 判断是否存在expirments文件夹，不存在则创建
-    # if not os.path.exists("./expirments/decode_tokens/"):
-    #     os.makedirs("./expirments/decode_tokens/")
-    # df = pd.DataFrame(decode_id_and_prob)
-    # df.to_csv(f"./expirments/decode_tokens/{dataset_name}_{file_name}.csv", index=False)
+    if not os.path.exists("./expirments/decode_tokens/"):
+        os.makedirs("./expirments/decode_tokens/")
+    df = pd.DataFrame(decode_id_and_prob)
+    df.to_csv(f"./expirments/decode_tokens/{dataset_name}_{file_name}.csv", index=False)
     
 
     print("")
