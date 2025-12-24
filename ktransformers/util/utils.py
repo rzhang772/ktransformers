@@ -13,6 +13,7 @@ import itertools
 import time
 import json 
 import enum
+import pandas as pd
 from transformers import (
     LogitsProcessorList,
     TemperatureLogitsWarper,
@@ -255,12 +256,16 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         sync_all_device(all_cuda_device)
         #print(logits)
         next_token_scores = logits_warper(inputs, logits[:, -1, :])
+        # print(f"\nnext_token_scores.shape: {next_token_scores.shape}")
         if generation_config.do_sample:
             probs = nn.functional.softmax(next_token_scores, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
+            # print(f"Token: {next_token}, Prob: {probs[0,next_token].item()}\n")
         else:
             next_token = torch.argmax(next_token_scores, dim=-1)
-        return next_token
+            probs = nn.functional.softmax(next_token_scores, dim=-1)
+        # print(f"\nnext_token: {next_token}; next_token_score: {next_token_scores[0, next_token].item()}; prob: {probs[0,next_token].item()}\n")
+        return next_token, probs[0,next_token].item()
     
     # TODO: use CUDA Graph for chunk prefill, may get small improvement
     @nvtx.annotate("chunk_prefill")
@@ -356,7 +361,12 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         seq_length += 1
         
         cuda_graph_runner = None
-            
+        
+        # decode_id_and_prob = {
+        #     'token_id': [],
+        #     'prob': [],
+        # }
+
         start_time = time.time()
         use_cuda_graph = False
         hit_rate = [[] for _ in range(58)]
@@ -382,7 +392,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             #     prof.step()
             # prof.export_chrome_trace(f"./generate_{i}.json")
 
-            next_token = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), 
+            next_token, prob = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), 
                                            position_ids, 
                                            cache_position, 
                                            past_key_values, 
@@ -392,7 +402,12 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                                            prompt_name = prompt_name, 
                                            token_idx=i,
                                            hit_rate=hit_rate
-                                           ).to(torch_device)
+                                           )
+            next_token = next_token.to(torch_device)
+
+            # decode_id_and_prob['token_id'].append(int(next_token))
+            # decode_id_and_prob['prob'].append(float(prob))
+            
             inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
             generated_ids[:, cache_position] = next_token.int()
             tokens.append(int(next_token))
@@ -413,6 +428,12 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     tokens_per_second = tokens_generated / total_time
     # with open("list.json", "w") as f:
     #     json.dump(hit_rate, f)
+    # 判断是否存在expirments文件夹，不存在则创建
+    # if not os.path.exists("./expirments/decode_tokens/"):
+    #     os.makedirs("./expirments/decode_tokens/")
+    # df = pd.DataFrame(decode_id_and_prob)
+    # df.to_csv(f"./expirments/decode_tokens/{dataset_name}_{file_name}.csv", index=False)
+    
 
     print("")
     print(f"dataset name:         {dataset_name}")

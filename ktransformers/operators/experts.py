@@ -465,9 +465,9 @@ class KExpertsCPU(KExpertsBase):
                     gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, top8_experts[i], self.elements_per_expert, self.gate_type)
                     down = self.gguf_loader.load_ggml_expert_from_weights(self.down, top8_experts[i], self.elements_per_expert, self.down_type)
 
-                    self.up_slots[i].copy_(up)
-                    self.gate_slots[i].copy_(gate)
-                    self.down_slots[i].copy_(down)
+                    self.up_slots[i].copy_(up) # type: ignore
+                    self.gate_slots[i].copy_(gate) # type: ignore
+                    self.down_slots[i].copy_(down) # type: ignore
 
                     self.cached_experts["up_projs"][i].load(self.up_slots[i])
                     self.cached_experts["gate_projs"][i].load(self.gate_slots[i])

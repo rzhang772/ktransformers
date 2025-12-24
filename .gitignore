@@ -41,3 +41,4 @@ expirments/*.csv
 expirments/old_results/
 expirments/KTexpirments/kt_logs/
 expirments/KTexpirments/*.csv
+expirments/decode_tokens/

@@ -6,7 +6,7 @@ Copyright (c) 2024 by KVCache.AI, All Rights Reserved.
 """
 import os
 import time
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 import platform
 import sys
 
@@ -17,11 +17,11 @@ import torch.profiler
 import logging
 from torch.profiler import profile, ProfilerActivity, tensorboard_trace_handler
 from transformers import (
-    AutoTokenizer,
-    AutoConfig,
-    AutoModelForCausalLM,
-    GenerationConfig,
-    TextStreamer,
+    AutoTokenizer, # pyright: ignore[reportPrivateImportUsage]
+    AutoConfig, # type: ignore
+    AutoModelForCausalLM, # type: ignore
+    GenerationConfig, # type: ignore
+    TextStreamer, # type: ignore
 )
 import json
 import fire
@@ -58,7 +58,7 @@ default_optimize_rules = {
 
 def local_chat(
     model_path: str | None = None,
-    optimize_config_path: str = None,
+    optimize_config_path: str = None, # type: ignore
     gguf_path: str | None = None,
     max_new_tokens: int = 1000,
     cpu_infer: int = Config().cpu_infer,
@@ -134,13 +134,13 @@ def local_chat(
     optimize_and_load_gguf(model, optimize_config_path, gguf_path, config, default_device=device)
     
     try:
-        model.generation_config = GenerationConfig.from_pretrained(model_path)
+        model.generation_config = GenerationConfig.from_pretrained(model_path) # type: ignore
     except Exception as e:
         print(f"generation config can't auto create, make default. Message: {e}")
         gen_config = GenerationConfig(
-            temperature=1e-5,
+            temperature=1,
             top_p=0.95,
-            do_sample=True
+            do_sample=False
         )
         model.generation_config = gen_config
     # model.generation_config = GenerationConfig.from_pretrained(model_path)
@@ -156,7 +156,7 @@ def local_chat(
     #     os.system("clear")
 
 
-    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test_prompt"):
+    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test2"):
         dataset_files = {}
 
         for dataset_name in os.listdir(base_dir):

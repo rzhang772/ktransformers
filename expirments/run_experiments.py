@@ -79,7 +79,7 @@ def run_experiment(cpu_infer, prefetch_num, gpu_compute_max_num):
 
         # 实时读取输出并写入日志
         with open(log_file, "w", encoding="utf-8") as f:
-            for line in proc.stdout:
+            for line in proc.stdout: # type: ignore
                 f.write(line)
                 f.flush()
                 output_lines.append(line)
