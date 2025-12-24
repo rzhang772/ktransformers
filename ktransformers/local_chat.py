@@ -129,7 +129,7 @@ def local_chat(
         gen_config = GenerationConfig(
             temperature=1e-5,
             top_p=0.95,
-            do_sample=True
+            do_sample=False
         )
         model.generation_config = gen_config
     # model.generation_config = GenerationConfig.from_pretrained(model_path)
@@ -145,7 +145,7 @@ def local_chat(
     #     os.system("clear")
 
 
-    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test_prompt"):
+    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test2"):
         dataset_files = {}
 
         for dataset_name in os.listdir(base_dir):
