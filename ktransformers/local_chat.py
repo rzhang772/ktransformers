@@ -36,6 +36,17 @@ from ktransformers.util.utils import prefill_and_generate, get_compute_capabilit
 from ktransformers.server.config.config import Config
 from ktransformers.operators.flashinfer_wrapper import flashinfer_enabled
 from ktransformers.util.vendors import device_manager, get_device, to_device, GPUVendor
+
+import random
+import numpy as np
+seed = 42
+
+random.seed(seed)
+np.random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+
 custom_models = {
     "DeepseekV2ForCausalLM": DeepseekV2ForCausalLM,
     "DeepseekV3ForCausalLM": DeepseekV3ForCausalLM,
@@ -138,7 +149,7 @@ def local_chat(
     except Exception as e:
         print(f"generation config can't auto create, make default. Message: {e}")
         gen_config = GenerationConfig(
-            temperature=1,
+            temperature=1e-5,
             top_p=0.95,
             do_sample=False
         )
@@ -213,8 +224,8 @@ def local_chat(
             time.sleep(1)  # 等待文件写入完成
 
 
-        #     break
-        # break
+            break
+        break
 
 
     # while True:
