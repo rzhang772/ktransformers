@@ -13,6 +13,7 @@ import time
 import enum
 import sys
 import nvtx
+import pandas as pd
 from transformers import (
     LogitsProcessorList,
     TemperatureLogitsWarper,
@@ -258,7 +259,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             next_token = torch.multinomial(probs, num_samples=1).squeeze(1)
         else:
             next_token = torch.argmax(next_token_scores, dim=-1)
-        return next_token
+            score = next_token_scores[0,next_token]
+        return next_token, score
     
     # TODO: use CUDA Graph for chunk prefill, may get small improvement
     @nvtx.annotate("chunk_prefill")
@@ -358,6 +360,11 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         seq_length += 1
         
         cuda_graph_runner = None
+
+        decode_token_kt = {
+            'token_id': [],
+            'score': [],
+        }
             
         start_time = time.time()
         for i in range(1, max_new_tokens):
@@ -382,7 +389,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             #     prof.step()
             # prof.export_chrome_trace(f"./generate_{i}.json")
 
-            next_token = decode_one_tokens(cuda_graph_runner, 
+            next_token, score = decode_one_tokens(cuda_graph_runner, 
                                            next_token.unsqueeze(0), 
                                            position_ids, 
                                            cache_position, 
@@ -391,7 +398,12 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                                            generation_config, 
                                            use_cuda_graph, 
                                            prompt_name = prompt_name, 
-                                           token_idx=i).to(torch_device)
+                                           token_idx=i)
+            next_token = next_token.to(torch_device)
+
+            decode_token_kt['token_id'].append(int(next_token))
+            decode_token_kt['score'].append(float(score.cpu().numpy()))
+
             inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
             generated_ids[:, cache_position] = next_token.int()
             tokens.append(int(next_token))
@@ -407,6 +419,11 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             cache_position += 1
             position_ids = cache_position.unsqueeze(0)
         
+    # 检查点目录是否存在，不存在则创建
+    if not os.path.exists(f"./expirments/KTexpirments/decode_tokens_kt/"):
+        os.makedirs(f"./expirments/KTexpirments/decode_tokens_kt/")
+    df = pd.DataFrame(decode_token_kt)
+    df.to_csv(f"./expirments/KTexpirments/decode_tokens_kt/{dataset}_{file_name}.csv", index=False)
 
     total_time = time.time() - start_time
     tokens_generated = len(tokens)

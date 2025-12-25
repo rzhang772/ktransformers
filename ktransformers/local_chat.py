@@ -137,7 +137,7 @@ def local_chat(
         print(f"generation config can't auto create, make default. Message: {e}")
         gen_config = GenerationConfig(
             temperature=1,
-            top_p=0.95,
+            # top_p=0.95,
             do_sample=False
         )
         model.generation_config = gen_config
