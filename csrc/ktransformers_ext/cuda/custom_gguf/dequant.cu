@@ -986,11 +986,12 @@ torch::Tensor dequantize_q4_k_ongpu(const torch::Tensor& data_gpu, const int num
             dequantize_q4_k_fp16_kernel<<<512, 256>>>(data_gpu.data_ptr<int8_t>(), (__half*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
             break;
         case torch::kBFloat16: {
-            // dequantize_q4_k_bf16_kernel<<<(num_blocks + 255)/256, 256>>>(data_gpu.data_ptr<int8_t>(), (nv_bfloat16*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
-            int total_elems = num_blocks * ele_per_blk;
-            int threads_per_block = 256;
-            int num_blocks_grid = (total_elems + threads_per_block - 1) / threads_per_block;
-            dequantize_q4_k_bf16_kernel_per_elem<<<num_blocks_grid, threads_per_block>>>(data_gpu.data_ptr<int8_t>(), (nv_bfloat16*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
+            dequantize_q4_k_bf16_kernel<<<(num_blocks + 255)/256, 256>>>(data_gpu.data_ptr<int8_t>(), (nv_bfloat16*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
+            // int total_elems = num_blocks * ele_per_blk;
+            // int threads_per_block = 256;
+            // int num_blocks_grid = (total_elems + threads_per_block - 1) / threads_per_block;
+            // dequantize_q4_k_bf16_kernel_per_elem<<<num_blocks_grid, threads_per_block>>>(data_gpu.data_ptr<int8_t>(), (nv_bfloat16*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
+
             break;
         }
         case torch::kFloat32:
@@ -1109,10 +1110,11 @@ torch::Tensor dequantize_iq4_xs_ongpu(const torch::Tensor& data_gpu, const int n
             dequantize_iq4_xs_fp16_kernel<<<512, 256>>>(data_gpu.data_ptr<int8_t>(), (__half*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
             break;
         case torch::kBFloat16:{
-            int total_elems = num_blocks * ele_per_blk;
-            int threads = 256; // 每个 block 的线程数
-            int blocks = (total_elems + threads - 1) / threads;
-            dequantize_iq4_xs_bf16_kernel_per_elem<<<blocks, threads>>>(data_gpu.data_ptr<int8_t>(), (nv_bfloat16*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
+            dequantize_iq4_xs_bf16_kernel<<<512, 256>>>(data_gpu.data_ptr<int8_t>(), (nv_bfloat16*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
+            // int total_elems = num_blocks * ele_per_blk;
+            // int threads = 256; // 每个 block 的线程数
+            // int blocks = (total_elems + threads - 1) / threads;
+            // dequantize_iq4_xs_bf16_kernel_per_elem<<<blocks, threads>>>(data_gpu.data_ptr<int8_t>(), (nv_bfloat16*)output.data_ptr(), blk_size, ele_per_blk, num_blocks);
             break;
         }
             

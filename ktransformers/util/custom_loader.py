@@ -407,6 +407,7 @@ class GGUFLoader(ModelLoader):
         if ggml_type not in GGML_NAMES:
             raise NotImplementedError(f"ggml_type {ggml_type} not implemented")
         ggml_name = GGML_NAMES[ggml_type]
+        # print(f"Loading expert tensor {name}, expert_id: {expert_id}, elements_per_expert: {elements_per_expert}, ggml_type: {ggml_type}({ggml_name})")
 
         # TODO: experts may fused in quant block, split it
         assert elements_per_expert % GGML_ELEMENTS_PER_BLOCK[ggml_name] == 0, "experts may fused in quant block, please use CPU dequant"
@@ -415,6 +416,7 @@ class GGUFLoader(ModelLoader):
         block_size = GGML_BLOCK_SIZES[ggml_name]
         offset = expert_id * block_size * blocks_per_experts
         data = data[offset: offset + block_size * blocks_per_experts]
+        # return data
 
         if "cuda" in device.lower():
             values = GGML_DEQUANTIZE_GPU[ggml_name](data, device, target_dtype)

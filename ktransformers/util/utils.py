@@ -263,9 +263,9 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             # print(f"Token: {next_token}, Prob: {probs[0,next_token].item()}\n")
         else:
             next_token = torch.argmax(next_token_scores, dim=-1)
-            probs = nn.functional.softmax(next_token_scores, dim=-1)
+            score = next_token_scores[0, next_token].item()
         # print(f"\nnext_token: {next_token}; next_token_score: {next_token_scores[0, next_token].item()}; prob: {probs[0,next_token].item()}\n")
-        return next_token, probs[0,next_token].item()
+        return next_token, score
     
     # TODO: use CUDA Graph for chunk prefill, may get small improvement
     @nvtx.annotate("chunk_prefill")
@@ -304,7 +304,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             past_key_values = None
         
         generation_config, model_kwargs = model._prepare_generation_config(
-            None, do_sample=False, temperature=1, top_p=0.95,
+            None, do_sample=False,
             # change this to modify generate config
             #top_k=5, top_p=0.85, temperature=0.1
         )
@@ -364,7 +364,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         
         decode_id_and_prob = {
             'token_id': [],
-            'prob': [],
+            'score': [],
         }
 
         start_time = time.time()
@@ -392,7 +392,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             #     prof.step()
             # prof.export_chrome_trace(f"./generate_{i}.json")
 
-            next_token, prob = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), 
+            next_token, score = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), 
                                            position_ids, 
                                            cache_position, 
                                            past_key_values, 
@@ -406,7 +406,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             next_token = next_token.to(torch_device)
 
             decode_id_and_prob['token_id'].append(int(next_token))
-            decode_id_and_prob['prob'].append(float(prob))
+            decode_id_and_prob['score'].append(float(score))
             
             inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
             generated_ids[:, cache_position] = next_token.int()

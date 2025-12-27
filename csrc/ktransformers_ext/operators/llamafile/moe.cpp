@@ -191,7 +191,14 @@ void MOE::forward_one(int k, const uint64_t* expert_ids, const float* weights,
     if (config_.hidden_type == ggml_internal_get_type_traits(config_.gate_type).vec_dot_type && config_.hidden_type == ggml_internal_get_type_traits(config_.up_type).vec_dot_type) {
         gate_input_ptr = up_input_ptr = input;
     } else {
+        // printf("===============================>>>>>>MOE::forward_one: input data type != gate_type or up_type, need conversion to fp32\n");
+        // printf("config_.hidden_type: %d, gate_type: %d, up_type: %d\n", config_.hidden_type, config_.gate_type, config_.up_type);
+
         to_float(input, s_input_fp32_, config_.hidden_size, config_.hidden_type); // input -> s_input_fp32_
+        // printf("C++转换:\n");
+        // for(int iii=0;iii<10;iii++){
+        //     printf("s_input_fp32_[%d]: %f\n", iii, s_input_fp32_[iii]);
+        // }
         if (ggml_internal_get_type_traits(config_.gate_type).vec_dot_type == ggml_internal_get_type_traits(config_.up_type).vec_dot_type) {
             from_float(s_input_fp32_, s_gate_input_, config_.hidden_size, ggml_internal_get_type_traits(config_.gate_type).vec_dot_type); // s_input_fp32_ -> s_gate_input_
             gate_input_ptr = up_input_ptr = s_gate_input_;

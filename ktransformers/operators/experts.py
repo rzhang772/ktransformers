@@ -465,9 +465,16 @@ class KExpertsCPU(KExpertsBase):
                     gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, top8_experts[i], self.elements_per_expert, self.gate_type)
                     down = self.gguf_loader.load_ggml_expert_from_weights(self.down, top8_experts[i], self.elements_per_expert, self.down_type)
 
+                    # print(f"init cached expert id: {top8_experts[i].item()};\n up: {up[:10]}\n")
+                    
+
                     self.up_slots[i].copy_(up) # type: ignore
                     self.gate_slots[i].copy_(gate) # type: ignore
                     self.down_slots[i].copy_(down) # type: ignore
+
+                    # up_dequantize = self.gguf_loader.dequantize_expert(self.up_slots[i], self.up_type, target_dtype=torch.float32)
+                    # print(f"exact expert {top8_experts[i].item()} up weights after dequantize: {up_dequantize[0, :10]}\n")
+                    # print(f"torch default type:{torch.get_default_dtype()}, dequantize type: {up_dequantize.dtype}, shape: {up_dequantize.shape}")
 
                     self.cached_experts["up_projs"][i].load(self.up_slots[i])
                     self.cached_experts["gate_projs"][i].load(self.gate_slots[i])
@@ -476,6 +483,12 @@ class KExpertsCPU(KExpertsBase):
                 self.cache_ready[0] = 1
                 # self.layer_prefetch_ready[0] = 1
                 
+                # print(f"\nKEY: {self.key}")
+                # for j in range(50):
+                #     up_weights = self.gguf_loader.load_expert_tensor(self.key + ".ffn_up_exps.weight", self.up, j, self.elements_per_expert,target_dtype=torch.get_default_dtype(), device=self.device)
+                #     print(f"\nexact expert {j}, target type: {torch.get_default_dtype()}, shape: {up_weights.shape}, dtype: {up_weights.dtype} up weights: {up_weights[0, :10]}")
+                # sys.exit(0)
+
                 print(f"==++++++++++++>>>>. {self.key}: Expert cache initialized")
                 
 
@@ -512,6 +525,7 @@ class KExpertsCPU(KExpertsBase):
                 in_gpu_mask[self.cached_experts_ids[i].item()] = 1
 
         input_tensor = input_tensor.contiguous().cpu()
+        # input_tensor_32 = input_tensor.to(torch.float32)
         expert_ids = expert_ids.contiguous().cpu()
         weights = weights.contiguous().to(torch.float32).cpu()
         bsz_tensor = bsz_tensor.contiguous().cpu()
@@ -524,9 +538,10 @@ class KExpertsCPU(KExpertsBase):
             hn = torch.tensor(Config().gpu_compute_max_num)
         hn_rate = hn.item() / self.cached_experts_num
         hit_rate[self.layer_id].append(hn_rate)
-
         
-        
+        # torch.set_printoptions(precision=6, sci_mode=False)
+        # print(f"传入数据bf16: {input_tensor[0,0:10]}")
+        # print(f"python转换float32: {input_tensor_32[0,0:10]}")
         # cpu output
         @nvtx.annotate("KExpertsCPU.cpu_commit", color="red")
         def cpu_commit():
@@ -613,12 +628,21 @@ class KExpertsCPU(KExpertsBase):
         output += y_
         if gpu_compute:
             output += gpu_output
+        
+        if self.layer_id == 0:
+            print(f"\nLayer {self.layer_id} token {token_idx} hit rate: {hn_rate:.4f}")
+            print(output.shape)
+            print(output.mean())
+            print(output[0,0,0:10])
+            print(gpu_output[0,0,0:10])
+        # sys.exit(0)
         return output
     
     def decode_with_layer_prefetch(self, mode, token_idx, input_tensor, identity, expert_ids, weights, shared_experts = None, bsz_tensor=None, cuda_graph_idx=0, hit_rate=None, next_layer = None):
         '''
         get next layer's gate to predict
         '''
+        
         for i in range(expert_ids.size(0)):
             for j in range(expert_ids.size(1)):
                 self.expert_frequency[expert_ids[i][j]] += 1    
@@ -790,9 +814,12 @@ class KExpertsCPU(KExpertsBase):
         expert_ids: [1, 8]
         weights: [1, 8]
         '''
+        # print(f"input tenser dtype: {input_tensor.dtype}")
+        # sys.exit(0)
         input_tensor = input_tensor.to(self.gpu_device)  # 确保输入张量在GPU上
         expert_ids = expert_ids.to(self.gpu_device)  # 确保expert_ids在GPU上
         weights = weights.to(self.gpu_device)  # 确保weights在GPU上
+        print(f"weights shape: {weights.shape}")
 
         weighted_output = torch.zeros_like(input_tensor, device=self.gpu_device, dtype=input_tensor.dtype)  # [batch_size, sequence_length, hidden_dim]
 
