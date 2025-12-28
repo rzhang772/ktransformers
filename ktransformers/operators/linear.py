@@ -765,8 +765,8 @@ class SLinear(nn.Module):
         # x: (batch_size, hidden_size)
         # 1) 解量化
         # print(f"parameter_quantized dtype: {self.parameter_quantized.dtype}, shape: {self.parameter_quantized.shape}")
-        x = x.to(torch.float32)
-        parameter_dequantized = self.gguf_loader.dequantize_expert(self.parameter_quantized, ggml_type, target_dtype=torch.float32)
+        # x = x.to(torch.float32)
+        parameter_dequantized = self.gguf_loader.dequantize_expert(self.parameter_quantized, ggml_type, target_dtype=self.target_dtype)
         # 解量化后统一需要先转换为目标数据类型，然后view为转置后的形状（out, in) 然后转置为（in， out）
         # up & gate: (out = intermediate_size, in = hidden_size)
         # down: (out = hidden_size, in = intermediate_size)
@@ -775,8 +775,8 @@ class SLinear(nn.Module):
         parameter_dequantized = parameter_dequantized.view(self.out_features, self.in_features)
         # parameter_dequantized = parameter_dequantized.view(torch.bfloat16)
 
-        # output = F.linear(x, parameter_dequantized, bias=None) # x @ parameter_dequantized.T
-        output = x@parameter_dequantized.T
+        output = F.linear(x, parameter_dequantized, bias=None) # x @ parameter_dequantized.T
+        # output = x@parameter_dequantized.T
         # 解量化后即释放
         del parameter_dequantized
         return output
