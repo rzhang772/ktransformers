@@ -264,8 +264,9 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         else:
             next_token = torch.argmax(next_token_scores, dim=-1)
             score = next_token_scores[0, next_token].item()
+            prob = nn.functional.softmax(next_token_scores, dim=-1)[0, next_token].item()
         # print(f"\nnext_token: {next_token}; next_token_score: {next_token_scores[0, next_token].item()}; prob: {probs[0,next_token].item()}\n")
-        return next_token, score
+        return next_token, score, prob
     
     # TODO: use CUDA Graph for chunk prefill, may get small improvement
     @nvtx.annotate("chunk_prefill")
@@ -365,6 +366,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         decode_id_and_prob = {
             'token_id': [],
             'score': [],
+            'prob': [],
         }
 
         start_time = time.time()
@@ -392,7 +394,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             #     prof.step()
             # prof.export_chrome_trace(f"./generate_{i}.json")
 
-            next_token, score = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), 
+            next_token, score, prob = decode_one_tokens(cuda_graph_runner, next_token.unsqueeze(0), 
                                            position_ids, 
                                            cache_position, 
                                            past_key_values, 
@@ -407,6 +409,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
 
             decode_id_and_prob['token_id'].append(int(next_token))
             decode_id_and_prob['score'].append(float(score))
+            decode_id_and_prob['prob'].append(float(prob))
             
             inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
             generated_ids[:, cache_position] = next_token.int()

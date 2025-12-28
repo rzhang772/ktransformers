@@ -224,8 +224,8 @@ def local_chat(
             time.sleep(1)  # 等待文件写入完成
 
 
-            break
-        break
+        #     break
+        # break
 
 
     # while True:

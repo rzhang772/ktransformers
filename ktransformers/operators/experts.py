@@ -629,12 +629,12 @@ class KExpertsCPU(KExpertsBase):
         if gpu_compute:
             output += gpu_output
         
-        if self.layer_id == 0:
-            print(f"\nLayer {self.layer_id} token {token_idx} hit rate: {hn_rate:.4f}")
-            print(output.shape)
-            print(output.mean())
-            print(output[0,0,0:10])
-            print(gpu_output[0,0,0:10])
+        # if self.layer_id == 0:
+        #     print(f"\nLayer {self.layer_id} token {token_idx} hit rate: {hn_rate:.4f}")
+        #     print(output.shape)
+        #     print(output.mean())
+        #     print(output[0,0,0:10])
+        #     print(gpu_output[0,0,0:10])
         # sys.exit(0)
         return output
     
@@ -819,7 +819,7 @@ class KExpertsCPU(KExpertsBase):
         input_tensor = input_tensor.to(self.gpu_device)  # 确保输入张量在GPU上
         expert_ids = expert_ids.to(self.gpu_device)  # 确保expert_ids在GPU上
         weights = weights.to(self.gpu_device)  # 确保weights在GPU上
-        print(f"weights shape: {weights.shape}")
+        # print(f"weights shape: {weights.shape}")
 
         weighted_output = torch.zeros_like(input_tensor, device=self.gpu_device, dtype=input_tensor.dtype)  # [batch_size, sequence_length, hidden_dim]
 
