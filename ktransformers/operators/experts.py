@@ -247,6 +247,18 @@ class KExpertsCPU(KExpertsBase):
             ctypes.cast(self.down.ctypes.data, ctypes.POINTER(ctypes.c_uint64)).contents
         )
         # print(f"{w['gate'].shape}, {w['up'].shape}, {w['down'].shape}")
+        # self.gate = torch.from_numpy(w["gate"]).pin_memory()
+        # self.up   = torch.from_numpy(w["up"]).pin_memory()
+        # self.down = torch.from_numpy(w["down"]).pin_memory()
+
+        # self.gate_type = w["gate_type"]
+        # self.up_type   = w["up_type"]
+        # self.down_type = w["down_type"]
+
+        # gate_ptr = self.gate.data_ptr()
+        # up_ptr   = self.up.data_ptr()
+        # down_ptr = self.down.data_ptr()
+        
         self.up_slots   = [torch.empty(self.moe_intermediate_size * self.up_ggml_size, device=self.gpu_device, dtype=torch.uint8) for _ in range(self.cached_experts_num)]
         self.gate_slots = [torch.empty(self.moe_intermediate_size * self.gate_ggml_size, device=self.gpu_device, dtype=torch.uint8) for _ in range(self.cached_experts_num)]
         self.down_slots = [torch.empty(self.hidden_size * self.down_ggml_size, device=self.gpu_device, dtype=torch.uint8) for _ in range(self.cached_experts_num)]
@@ -859,6 +871,7 @@ class KExpertsCPU(KExpertsBase):
         - 仅在新专家未在 cache 中时替换（减少数据传输）
         - 替换时保持 cached_experts 中顺序不变，仅在可替换位置更新
         - 同步更新 self.cached_experts_ids
+        # 未使用
         """
         if self.layer_id == self.print_layer:
             print(f"before prefetch flag {self.is_prefetch_done}")
@@ -905,21 +918,20 @@ class KExpertsCPU(KExpertsBase):
                     idx = idx_tensor.item()
                     new_id = new_id_tensor.item()
 
-                    # ⚠️ 仅在需要替换时执行 load
-                    # self.cached_experts["up_projs"][idx].unload()
-                    # self.cached_experts["gate_projs"][idx].unload()
-                    # self.cached_experts["down_projs"][idx].unload()
-
-                    up = self.gguf_loader.load_ggml_expert_from_weights(self.up, new_id, self.elements_per_expert, self.up_type).pin_memory()
+                    up = self.gguf_loader.load_ggml_expert_from_weights(self.up, new_id, self.elements_per_expert, self.up_type)
                     # up = up.to(self.gpu_device, non_blocking=True)
-                    gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, new_id, self.elements_per_expert, self.gate_type).pin_memory()
+                    gate = self.gguf_loader.load_ggml_expert_from_weights(self.gate, new_id, self.elements_per_expert, self.gate_type)
                     # gate = gate.to(self.gpu_device, non_blocking=True)
-                    down = self.gguf_loader.load_ggml_expert_from_weights(self.down, new_id, self.elements_per_expert, self.down_type).pin_memory()
+                    down = self.gguf_loader.load_ggml_expert_from_weights(self.down, new_id, self.elements_per_expert, self.down_type)
                     # down = down.to(self.gpu_device, non_blocking=True)
 
-                    self.cached_experts["up_projs"][idx].load(up)
-                    self.cached_experts["gate_projs"][idx].load(gate)
-                    self.cached_experts["down_projs"][idx].load(down)
+                    self.up_slots[idx].copy_(up) # type: ignore
+                    self.gate_slots[idx].copy_(gate) # type: ignore
+                    self.down_slots[idx].copy_(down) # type: ignore
+
+                    self.cached_experts["up_projs"][idx].load(self.up_slots[idx])
+                    self.cached_experts["gate_projs"][idx].load(self.gate_slots[idx])
+                    self.cached_experts["down_projs"][idx].load(self.down_slots[idx])
 
                     # 更新缓存 ID
                     self.cached_experts_ids[idx] = new_id

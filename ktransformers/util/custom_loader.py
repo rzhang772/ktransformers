@@ -444,6 +444,8 @@ class GGUFLoader(ModelLoader):
         block_size = GGML_BLOCK_SIZES[ggml_name]
         offset = expert_id * block_size * blocks_per_experts
         data = data[offset: offset + block_size * blocks_per_experts]
+        if type(data) is torch.Tensor:
+            return data
         return torch.from_numpy(data)
     
     @nvtx.annotate("dequantize_expert")
