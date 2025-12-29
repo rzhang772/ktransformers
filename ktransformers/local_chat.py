@@ -136,9 +136,9 @@ def local_chat(
     except Exception as e:
         print(f"generation config can't auto create, make default. Message: {e}")
         gen_config = GenerationConfig(
-            temperature=1,
-            # top_p=0.95,
-            do_sample=False
+            temperature=1e-5,
+            top_p=0.95,
+            do_sample=True
         )
         model.generation_config = gen_config
     # model.generation_config = GenerationConfig.from_pretrained(model_path)

@@ -260,7 +260,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         else:
             next_token = torch.argmax(next_token_scores, dim=-1)
             score = next_token_scores[0,next_token]
-        return next_token, score
+        return next_token, 0
     
     # TODO: use CUDA Graph for chunk prefill, may get small improvement
     @nvtx.annotate("chunk_prefill")
@@ -302,7 +302,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             past_key_values = None
         
         generation_config, model_kwargs = model._prepare_generation_config(
-            None, do_sample=False
+            None, do_sample=True
             # change this to modify generate config
             #top_k=5, top_p=0.85, temperature=0.1
         )
@@ -361,10 +361,10 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         
         cuda_graph_runner = None
 
-        decode_token_kt = {
-            'token_id': [],
-            'score': [],
-        }
+        # decode_token_kt = {
+        #     'token_id': [],
+        #     'score': [],
+        # }
             
         start_time = time.time()
         for i in range(1, max_new_tokens):
@@ -401,8 +401,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                                            token_idx=i)
             next_token = next_token.to(torch_device)
 
-            decode_token_kt['token_id'].append(int(next_token))
-            decode_token_kt['score'].append(float(score.cpu().numpy()))
+            # decode_token_kt['token_id'].append(int(next_token))
+            # decode_token_kt['score'].append(float(score.cpu().numpy()))
 
             inputs = torch.cat((inputs, next_token.unsqueeze(0)), dim=-1)
             generated_ids[:, cache_position] = next_token.int()
@@ -420,10 +420,10 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             position_ids = cache_position.unsqueeze(0)
         
     # 检查点目录是否存在，不存在则创建
-    if not os.path.exists(f"./expirments/KTexpirments/decode_tokens_kt/"):
-        os.makedirs(f"./expirments/KTexpirments/decode_tokens_kt/")
-    df = pd.DataFrame(decode_token_kt)
-    df.to_csv(f"./expirments/KTexpirments/decode_tokens_kt/{dataset}_{file_name}.csv", index=False)
+    # if not os.path.exists(f"./expirments/KTexpirments/decode_tokens_kt/"):
+    #     os.makedirs(f"./expirments/KTexpirments/decode_tokens_kt/")
+    # df = pd.DataFrame(decode_token_kt)
+    # df.to_csv(f"./expirments/KTexpirments/decode_tokens_kt/{dataset}_{file_name}.csv", index=False)
 
     total_time = time.time() - start_time
     tokens_generated = len(tokens)
