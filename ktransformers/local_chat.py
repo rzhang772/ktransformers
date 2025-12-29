@@ -149,9 +149,9 @@ def local_chat(
     except Exception as e:
         print(f"generation config can't auto create, make default. Message: {e}")
         gen_config = GenerationConfig(
-            temperature=1,
+            temperature=1e-5,
             top_p=0.95,
-            do_sample=False
+            do_sample=True
         )
         model.generation_config = gen_config
     # model.generation_config = GenerationConfig.from_pretrained(model_path)
@@ -167,7 +167,7 @@ def local_chat(
     #     os.system("clear")
 
 
-    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test2"):
+    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test_prompt"):
         dataset_files = {}
 
         for dataset_name in os.listdir(base_dir):

@@ -305,7 +305,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
             past_key_values = None
         
         generation_config, model_kwargs = model._prepare_generation_config(
-            None, do_sample=False,
+            None, do_sample=True,
             # change this to modify generate config
             #top_k=5, top_p=0.85, temperature=0.1
         )
