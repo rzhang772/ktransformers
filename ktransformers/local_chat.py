@@ -154,7 +154,7 @@ def local_chat(
     #     os.system("clear")
 
 
-    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test2"):
+    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test_prompt"):
         dataset_files = {}
 
         for dataset_name in os.listdir(base_dir):
