@@ -9,6 +9,8 @@ import time
 os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 import platform
 import sys
+import subprocess
+import signal
 
 project_dir = os.path.dirname(os.path.dirname(__file__))
 sys.path.insert(0, project_dir)
@@ -218,6 +220,14 @@ def local_chat(
                     use_flashinfer_mla = True, num_heads = config.num_attention_heads, head_dim_ckv = config.kv_lora_rank, head_dim_kpe = config.qk_rope_head_dim, q_head_dim = config.qk_rope_head_dim + config.qk_nope_head_dim, prompt_name=None
                 )
             else:
+                # 启动资源监控进程
+
+                monitor_process = subprocess.Popen(
+                    ["python", "./expirments/sys_monitor.py"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                    )
+                print(f"Started system monitor process with PID: {monitor_process.pid}")
                 generated = prefill_and_generate(
                     model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size, prompt_name=prompt_name, dataset_name=dataset, file_name=file_name
                 )
