@@ -8,7 +8,7 @@ nvmlInit()
 handle = nvmlDeviceGetHandleByIndex(3)
 process = psutil.Process()
 
-output_file = "./expirments/system_util_trace.csv"
+output_file = f"./expirments/system_util_trace_{time.time()}.csv"
 
 with open(output_file, "w", newline="") as f:
     writer = csv.writer(f)
