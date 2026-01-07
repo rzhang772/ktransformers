@@ -394,7 +394,8 @@ class DeepseekV3MLP(nn.Module):
                 mode: Optional[str] = None, 
                 token_idx: Optional[torch.Tensor] = None,
                 hit_rate: Optional[list[float]] = None,
-                next_layer: Optional[torch.Tensor] = None,):
+                next_layer: Optional[torch.Tensor] = None,
+                timebreak: Optional[dict] = None,):
         down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
         return down_proj # shape: [batch_size, seq_len, hidden_size]
 
@@ -1191,6 +1192,7 @@ class DeepseekV3DecoderLayer(nn.Module):
         mode: Optional[str] = None,
         token_idx: Optional[torch.LongTensor] = None,
         hit_rate: Optional[list[float]] = None,
+        timebreak: Optional[dict] = False,
         **kwargs,
     ) -> Tuple[
         torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]
@@ -1236,7 +1238,7 @@ class DeepseekV3DecoderLayer(nn.Module):
         # print(f"in DeecoderLayer next_layer: {next_layer}")
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states, prompt_name, mode, token_idx, hit_rate, next_layer)
+        hidden_states = self.mlp(hidden_states, prompt_name, mode, token_idx, hit_rate, next_layer, timebreak=timebreak)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -1674,6 +1676,7 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel, GenerationMixin):
         mode: Optional[str] = None,
         token_idx: Optional[torch.LongTensor] = None,
         hit_rate: Optional[list[float]] = None,
+        timebreak: Optional[dict] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -1730,6 +1733,7 @@ class DeepseekV3ForCausalLM(DeepseekV3PreTrainedModel, GenerationMixin):
             mode=mode,
             token_idx=token_idx,
             hit_rate=hit_rate,
+            timebreak=timebreak,
         )
 
         hidden_states = outputs[0]

@@ -226,7 +226,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     tokens = []
     
     @nvtx.annotate("decode_one_tokens")
-    def decode_one_tokens(cuda_graph_runner, cur_token, position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph: bool = True, prompt_name = None, token_idx = None, hit_rate = None):
+    def decode_one_tokens(cuda_graph_runner, cur_token, position_ids, cache_position, past_key_values, logits_warper, generation_config, use_cuda_graph: bool = True, prompt_name = None, token_idx = None, hit_rate = None, timebreak = None):
         if cuda_graph_runner is None:
             use_cuda_graph = False
         use_cuda_graph = False
@@ -250,7 +250,7 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                         prompt_name = prompt_name,
                         mode = "decode",
                         token_idx = token_idx,
-                        hit_rate = hit_rate)[0]
+                        hit_rate = hit_rate, timebreak = timebreak)[0]
         if past_key_values != None and isinstance(past_key_values, StaticCache):
             past_key_values.change_seq_length(1)
         sync_all_device(all_cuda_device)
@@ -372,6 +372,19 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
         start_time = time.time()
         use_cuda_graph = False
         hit_rate = [[] for _ in range(58)]
+        timebreak = {
+            'token_id': [],
+            'layer_id': [],
+            'hn_rate': [],
+            'overhead_time1': [],
+            'cpu_time': [],
+            'shared_expert_time': [],
+            'wait_cache_time': [],
+            'gpu_compute_time': [],
+            'predict_time': [],
+            'prefetch_submit_time': [],
+            'total_decode_time': [],
+        }
         for i in range(1, max_new_tokens):
             if use_flashinfer_mla:
                 MLAWrapperSingleton.plan_all(None,None,None,position_ids.squeeze(1)+1,None,
@@ -403,7 +416,8 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
                                            use_cuda_graph, 
                                            prompt_name = prompt_name, 
                                            token_idx=i,
-                                           hit_rate=hit_rate
+                                           hit_rate=hit_rate,
+                                           timebreak=timebreak,
                                            )
             next_token = next_token.to(torch_device)
 
@@ -436,6 +450,11 @@ def prefill_and_generate(model, tokenizer, inputs, max_new_tokens=10000, use_cud
     #     os.makedirs("./expirments/decode_tokens/")
     # df = pd.DataFrame(decode_id_and_prob)
     # df.to_csv(f"./expirments/decode_tokens/{dataset_name}_{file_name}.csv", index=False)
+    if not os.path.exists("./expirments/decode_timebreak/"):
+        os.makedirs("./expirments/decode_timebreak/")
+    df_timebreak = pd.DataFrame(timebreak)
+    method = 'tokenwise' if Config().prefetch_method == 0 else 'layerwise'
+    df_timebreak.to_csv(f"./expirments/decode_timebreak/{dataset_name}_{file_name}_timebreak_{method}.csv", index=False)
     
 
     print("")

@@ -169,7 +169,7 @@ def local_chat(
     #     os.system("clear")
 
 
-    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test_prompt"):
+    def list_prompt_files_by_dataset(base_dir="./moe_analysis/test2"):
         dataset_files = {}
 
         for dataset_name in os.listdir(base_dir):
@@ -221,13 +221,12 @@ def local_chat(
                 )
             else:
                 # 启动资源监控进程
-
-                monitor_process = subprocess.Popen(
-                    ["python", "./expirments/sys_monitor.py"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                    )
-                print(f"Started system monitor process with PID: {monitor_process.pid}")
+                # monitor_process = subprocess.Popen(
+                #     ["python", "./expirments/sys_monitor.py"],
+                #     stdout=subprocess.DEVNULL,
+                #     stderr=subprocess.DEVNULL
+                #     )
+                # print(f"Started system monitor process with PID: {monitor_process.pid}")
                 generated = prefill_and_generate(
                     model, tokenizer, input_tensor.to(device), max_new_tokens, use_cuda_graph, mode = mode, force_think = force_think, chunk_size = chunk_size, prompt_name=prompt_name, dataset_name=dataset, file_name=file_name
                 )
